@@ -29,7 +29,10 @@ import {
   BellRing,
   Trash2,
   CheckCircle2,
-  AlertTriangle
+  AlertTriangle,
+  Newspaper,
+  ExternalLink,
+  Clock
 } from 'lucide-react';
 import { cn } from './lib/utils';
 import { calculateSMA, calculateRSI } from './lib/calculations';
@@ -50,6 +53,15 @@ interface AppNotification {
   title: string;
   message: string;
   type: 'success' | 'alert' | 'info';
+}
+
+interface NewsItem {
+  title: string;
+  description: string;
+  url: string;
+  image?: string;
+  publishedAt: string;
+  source: string;
 }
 
 const BRAPI_TOKEN = 'hRNNEitB3hwbiUJePLwhgv';
@@ -100,6 +112,67 @@ export default function App() {
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
   const [showAlertPanel, setShowAlertPanel] = useState(false);
   const [alertForm, setAlertForm] = useState<{ symbol: string; targetPrice: string; condition: 'above' | 'below' } | null>(null);
+  const [top10Data, setTop10Data] = useState<StockData[]>([]);
+  const [top10Loading, setTop10Loading] = useState(false);
+  const [news, setNews] = useState<NewsItem[]>([]);
+  const [newsLoading, setNewsLoading] = useState(false);
+
+  const fetchNews = useCallback(async (symbols: string[]) => {
+    if (symbols.length === 0) {
+      setNews([]);
+      return;
+    }
+    setNewsLoading(true);
+    try {
+      // Brapi's news endpoint works better with one symbol or a query
+      // We'll fetch for the first ticker which is usually the primary focus
+      const symbol = symbols[0];
+      const response = await fetch(
+        `https://brapi.dev/api/news?q=${symbol}&token=${BRAPI_TOKEN}`
+      );
+      const result = await response.json();
+      if (result.news) {
+        setNews(result.news);
+      }
+    } catch (err) {
+      console.error('Erro ao buscar notícias:', err);
+    } finally {
+      setNewsLoading(false);
+    }
+  }, []);
+
+  const fetchTop10 = useCallback(async () => {
+    setTop10Loading(true);
+    try {
+      // Usando o endpoint de listagem com ordenação por volume para pegar as "maiores" (mais movimentadas)
+      const response = await fetch(
+        `https://brapi.dev/api/quote/list?sortBy=volume&sortOrder=desc&limit=10&token=${BRAPI_TOKEN}`
+      );
+      const result = await response.json();
+      if (result.stocks) {
+        // No endpoint de lista, os campos podem ter nomes ligeiramente diferentes ou estar em 'stocks'
+        // Brapi /api/quote/list retorna { stocks: [ { stock: 'PETR4', name: 'Petrobras', close: 30.1, change: 1.2, ... } ] }
+        const formattedData: StockData[] = result.stocks.map((s: any) => ({
+          symbol: s.stock,
+          shortName: s.name,
+          longName: s.name,
+          regularMarketPrice: s.close,
+          regularMarketChange: s.change,
+          regularMarketChangePercent: s.change, // Brapi list sometimes returns change as percent or just change
+          regularMarketTime: new Date().toISOString(),
+          regularMarketDayHigh: s.close, // List endpoint has limited data
+          regularMarketDayLow: s.close,
+          regularMarketVolume: s.volume,
+          historicalDataPrice: []
+        }));
+        setTop10Data(formattedData);
+      }
+    } catch (err) {
+      console.error('Erro ao buscar Top 10:', err);
+    } finally {
+      setTop10Loading(false);
+    }
+  }, []);
 
   const addAlert = (symbol: string, targetPrice: number, condition: 'above' | 'below') => {
     const newAlert: PriceAlert = {
@@ -208,7 +281,14 @@ export default function App() {
 
   useEffect(() => {
     fetchAllData(tickers, range);
-  }, [tickers, range, fetchAllData]);
+    fetchNews(tickers);
+  }, [tickers, range, fetchAllData, fetchNews]);
+
+  useEffect(() => {
+    fetchTop10();
+    const interval = setInterval(fetchTop10, 60000); // Atualiza a cada 1 minuto
+    return () => clearInterval(interval);
+  }, [fetchTop10]);
 
   const handleSearch = (e: FormEvent) => {
     e.preventDefault();
@@ -339,6 +419,67 @@ export default function App() {
       </header>
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        {/* Top 10 B3 Ribbon */}
+        <section className="mb-8">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-sm font-bold uppercase tracking-widest text-gray-400 flex items-center gap-2">
+              <TrendingUp className="w-4 h-4" />
+              Mercado B3 (Top 10)
+            </h2>
+            <div className="flex items-center gap-2">
+              {top10Loading && <RefreshCw className="w-3 h-3 text-blue-500 animate-spin" />}
+              <span className="text-[10px] text-gray-400 font-medium">Atualiza a cada 60s</span>
+            </div>
+          </div>
+          <div className="flex gap-4 overflow-x-auto pb-4 no-scrollbar -mx-4 px-4 sm:mx-0 sm:px-0">
+            <AnimatePresence mode="popLayout">
+              {top10Data.length > 0 ? (
+                top10Data.map((stock) => {
+                  const isPositive = stock.regularMarketChange >= 0;
+                  return (
+                    <motion.button
+                      layout
+                      key={stock.symbol}
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      onClick={() => {
+                        if (!tickers.includes(stock.symbol) && tickers.length < 3) {
+                          setTickers(prev => [...prev, stock.symbol]);
+                        } else if (tickers.includes(stock.symbol)) {
+                          setError('Esta ação já está na comparação.');
+                        } else {
+                          setError('Limite de 3 ações atingido.');
+                        }
+                      }}
+                      className="flex-shrink-0 bg-white border border-gray-100 rounded-2xl p-4 shadow-sm hover:shadow-md hover:border-blue-200 transition-all text-left min-w-[140px]"
+                    >
+                      <div className="flex flex-col gap-1">
+                        <span className="text-xs font-black text-blue-600">{stock.symbol}</span>
+                        <div className="flex items-baseline gap-2">
+                          <span className="text-sm font-bold text-gray-900">
+                            R$ {stock.regularMarketPrice.toFixed(2)}
+                          </span>
+                        </div>
+                        <div className={cn(
+                          "text-[10px] font-bold flex items-center gap-0.5",
+                          isPositive ? "text-emerald-600" : "text-rose-600"
+                        )}>
+                          {isPositive ? <ArrowUpRight className="w-3 h-3" /> : <ArrowDownRight className="w-3 h-3" />}
+                          {stock.regularMarketChangePercent.toFixed(2)}%
+                        </div>
+                      </div>
+                    </motion.button>
+                  );
+                })
+              ) : (
+                Array.from({ length: 10 }).map((_, i) => (
+                  <div key={i} className="flex-shrink-0 w-[140px] h-[82px] bg-gray-100 rounded-2xl animate-pulse" />
+                ))
+              )}
+            </AnimatePresence>
+          </div>
+        </section>
+
         {/* Tickers List */}
         <div className="flex flex-col sm:flex-row items-center justify-between gap-4 mb-6">
           <div className="flex flex-wrap gap-2">
@@ -714,7 +855,7 @@ export default function App() {
             </div>
             
             {/* Comparison Insights */}
-            <div className="bg-blue-600 rounded-2xl p-6 text-white shadow-lg shadow-blue-200 relative overflow-hidden">
+            <div className="bg-blue-600 rounded-2xl p-6 text-white shadow-lg shadow-blue-200 relative overflow-hidden mb-6">
                 <div className="relative z-10 grid grid-cols-1 md:grid-cols-2 gap-6 items-center">
                   <div>
                     <h3 className="text-lg font-bold mb-2">Análise de Comparação</h3>
@@ -735,6 +876,85 @@ export default function App() {
                 </div>
                 <div className="absolute -right-10 -top-10 bg-white/10 rounded-full w-40 h-40 blur-3xl"></div>
             </div>
+
+            {/* News Section */}
+            <section className="bg-white rounded-3xl p-6 shadow-sm border border-gray-100">
+              <div className="flex items-center justify-between mb-6">
+                <div className="flex items-center gap-2">
+                  <div className="p-2 bg-blue-50 rounded-lg">
+                    <Newspaper className="w-5 h-5 text-blue-600" />
+                  </div>
+                  <div>
+                    <h2 className="text-lg font-bold">Últimas Notícias</h2>
+                    <p className="text-xs text-gray-400">Fique por dentro das movimentações de {tickers[0]}</p>
+                  </div>
+                </div>
+                {newsLoading && <RefreshCw className="w-4 h-4 text-blue-500 animate-spin" />}
+              </div>
+
+              {news.length > 0 ? (
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                  {news.slice(0, 6).map((item, i) => (
+                    <motion.a
+                      key={i}
+                      href={item.url}
+                      target="_blank"
+                      rel="noopener noreferrer nofollow"
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ delay: i * 0.1 }}
+                      className="group flex flex-col bg-gray-50 rounded-2xl overflow-hidden border border-transparent hover:border-blue-200 hover:bg-white hover:shadow-xl hover:shadow-blue-500/5 transition-all"
+                    >
+                      {item.image && (
+                        <div className="aspect-video w-full overflow-hidden">
+                          <img 
+                            src={item.image} 
+                            alt={item.title}
+                            referrerPolicy="no-referrer"
+                            className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
+                          />
+                        </div>
+                      )}
+                      <div className="p-4 flex flex-col flex-1">
+                        <div className="flex items-center justify-between gap-4 mb-2">
+                          <span className="text-[10px] font-black uppercase tracking-widest text-blue-600 px-2 py-0.5 bg-blue-50 rounded">
+                            {item.source}
+                          </span>
+                          <div className="flex items-center gap-1 text-[10px] text-gray-400 font-bold">
+                            <Clock className="w-3 h-3" />
+                            {new Date(item.publishedAt).toLocaleDateString('pt-BR')}
+                          </div>
+                        </div>
+                        <h3 className="font-bold text-gray-900 leading-snug mb-2 group-hover:text-blue-600 transition-colors line-clamp-2">
+                          {item.title}
+                        </h3>
+                        <p className="text-xs text-gray-500 line-clamp-2 mb-4 leading-relaxed">
+                          {item.description}
+                        </p>
+                        <div className="mt-auto flex items-center gap-1.5 text-[10px] font-bold text-blue-600 uppercase tracking-wider group-hover:gap-2 transition-all">
+                          Ler reportagem completa
+                          <ExternalLink className="w-3 h-3" />
+                        </div>
+                      </div>
+                    </motion.a>
+                  ))}
+                </div>
+              ) : (
+                !newsLoading && (
+                  <div className="text-center py-12 bg-gray-50 rounded-2xl border border-dashed border-gray-200">
+                    <p className="text-sm text-gray-400 font-medium italic">Nenhuma notícia relevante encontrada no momento.</p>
+                  </div>
+                )
+              )}
+              
+              {newsLoading && news.length === 0 && (
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                  {[1, 2, 3].map((n) => (
+                    <div key={n} className="bg-gray-100 rounded-2xl h-64 animate-pulse" />
+                  ))}
+                </div>
+              )}
+            </section>
           </div>
         ) : (
           !loading && tickers.length > 0 && (
