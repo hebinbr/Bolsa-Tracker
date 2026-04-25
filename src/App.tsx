@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, FormEvent } from 'react';
+import { motion, AnimatePresence } from 'motion/react';
 import { 
   XAxis, 
   YAxis, 
@@ -863,29 +864,57 @@ export default function App() {
 
       {/* Notifications Toast */}
       <div className="fixed bottom-6 right-6 z-50 flex flex-col gap-3 pointer-events-none">
-        {notifications.map((n) => (
-          <div 
-            key={n.id}
-            className={cn(
-              "p-4 rounded-2xl shadow-xl border w-80 animate-in slide-in-from-right-4 fade-in duration-300 pointer-events-auto",
-              n.type === 'alert' ? "bg-rose-600 border-rose-500 text-white" : "bg-white border-gray-100 text-gray-900"
-            )}
-          >
-            <div className="flex items-start gap-3">
-              {n.type === 'alert' ? <BellRing className="w-5 h-5 shrink-0" /> : <CheckCircle2 className="w-5 h-5 shrink-0 text-emerald-500" />}
-              <div>
-                <h4 className="text-sm font-bold">{n.title}</h4>
-                <p className="text-xs opacity-90 mt-0.5">{n.message}</p>
+        <AnimatePresence mode="popLayout">
+          {notifications.map((n) => (
+            <motion.div 
+              key={n.id}
+              layout
+              initial={{ opacity: 0, x: 50, scale: 0.9 }}
+              animate={{ opacity: 1, x: 0, scale: 1 }}
+              exit={{ opacity: 0, x: 20, scale: 0.95 }}
+              transition={{ type: "spring", stiffness: 400, damping: 30 }}
+              className={cn(
+                "p-4 rounded-2xl shadow-2xl border w-80 pointer-events-auto backdrop-blur-sm",
+                n.type === 'alert' 
+                  ? "bg-rose-600 border-rose-500 text-white" 
+                  : n.type === 'success'
+                    ? "bg-white border-emerald-100 text-gray-900"
+                    : "bg-white border-gray-100 text-gray-900"
+              )}
+            >
+              <div className="flex items-start gap-3">
+                <div className={cn(
+                  "p-1.5 rounded-lg",
+                  n.type === 'alert' ? "bg-white/20" : "bg-emerald-50"
+                )}>
+                  {n.type === 'alert' ? (
+                    <BellRing className="w-4 h-4 text-white" />
+                  ) : (
+                    <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                  )}
+                </div>
+                <div className="flex-1">
+                  <h4 className="text-sm font-bold leading-tight">{n.title}</h4>
+                  <p className={cn(
+                    "text-xs mt-1 leading-relaxed",
+                    n.type === 'alert' ? "text-rose-100" : "text-gray-500"
+                  )}>
+                    {n.message}
+                  </p>
+                </div>
+                <button 
+                  onClick={() => setNotifications(prev => prev.filter(item => item.id !== n.id))}
+                  className={cn(
+                    "p-1 rounded-md transition-colors",
+                    n.type === 'alert' ? "hover:bg-white/20 text-white/60" : "hover:bg-gray-100 text-gray-400"
+                  )}
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
               </div>
-              <button 
-                onClick={() => setNotifications(prev => prev.filter(item => item.id !== n.id))}
-                className="ml-auto opacity-60 hover:opacity-100"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-          </div>
-        ))}
+            </motion.div>
+          ))}
+        </AnimatePresence>
       </div>
     </div>
   );
