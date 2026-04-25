@@ -7,7 +7,8 @@ import {
   ResponsiveContainer,
   LineChart,
   Line,
-  Legend
+  Legend,
+  ReferenceLine
 } from 'recharts';
 import { 
   Search, 
@@ -19,9 +20,36 @@ import {
   ArrowUpRight,
   ArrowDownRight,
   Plus,
-  X
+  X,
+  Settings2,
+  ChevronDown,
+  ChevronUp,
+  Bell,
+  BellRing,
+  Trash2,
+  CheckCircle2,
+  AlertTriangle
 } from 'lucide-react';
 import { cn } from './lib/utils';
+import { calculateSMA, calculateRSI } from './lib/calculations';
+
+interface PriceAlert {
+  id: string;
+  symbol: string;
+  targetPrice: number;
+  condition: 'above' | 'below';
+  isActive: boolean;
+  isTriggered: boolean;
+  triggeredAt?: string;
+  createdAt: string;
+}
+
+interface AppNotification {
+  id: string;
+  title: string;
+  message: string;
+  type: 'success' | 'alert' | 'info';
+}
 
 const BRAPI_TOKEN = 'hRNNEitB3hwbiUJePLwhgv';
 
@@ -60,6 +88,88 @@ export default function App() {
   const [stocksData, setStocksData] = useState<StockData[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [showTechnical, setShowTechnical] = useState(false);
+  const [indicatorSettings, setIndicatorSettings] = useState({
+    showSMA: false,
+    smaPeriod: 20,
+    showRSI: false,
+    rsiPeriod: 14
+  });
+  const [alerts, setAlerts] = useState<PriceAlert[]>([]);
+  const [notifications, setNotifications] = useState<AppNotification[]>([]);
+  const [showAlertPanel, setShowAlertPanel] = useState(false);
+  const [alertForm, setAlertForm] = useState<{ symbol: string; targetPrice: string; condition: 'above' | 'below' } | null>(null);
+
+  const addAlert = (symbol: string, targetPrice: number, condition: 'above' | 'below') => {
+    const newAlert: PriceAlert = {
+      id: Math.random().toString(36).substring(2, 9),
+      symbol,
+      targetPrice,
+      condition,
+      isActive: true,
+      isTriggered: false,
+      createdAt: new Date().toISOString()
+    };
+    setAlerts(prev => [...prev, newAlert]);
+    addNotification('Alerta Criado', `Notificaremos quando ${symbol} estiver ${condition === 'above' ? 'acima' : 'abaixo'} de R$ ${targetPrice.toFixed(2)}`, 'success');
+    setAlertForm(null);
+  };
+
+  const removeAlert = (id: string) => {
+    setAlerts(prev => prev.filter(a => a.id !== id));
+  };
+
+  const addNotification = useCallback((title: string, message: string, type: 'success' | 'alert' | 'info') => {
+    const newNotif: AppNotification = {
+      id: Math.random().toString(36).substring(2, 9),
+      title,
+      message,
+      type
+    };
+    setNotifications(prev => [newNotif, ...prev].slice(0, 5));
+    
+    // Auto-remove after 5 seconds
+    setTimeout(() => {
+      setNotifications(prev => prev.filter(n => n.id !== newNotif.id));
+    }, 5000);
+  }, []);
+
+  const checkAlerts = useCallback((data: StockData[]) => {
+    setAlerts(prevAlerts => {
+      let changed = false;
+      const newAlerts = prevAlerts.map(alert => {
+        if (!alert.isActive || alert.isTriggered) return alert;
+
+        const stock = data.find(s => s.symbol === alert.symbol);
+        if (!stock) return alert;
+
+        const triggered = alert.condition === 'above' 
+          ? stock.regularMarketPrice >= alert.targetPrice
+          : stock.regularMarketPrice <= alert.targetPrice;
+
+        if (triggered) {
+          changed = true;
+          addNotification(
+            `Alerta de Preço: ${stock.symbol}`,
+            `${stock.symbol} atingiu R$ ${stock.regularMarketPrice.toFixed(2)} (${alert.condition === 'above' ? 'acima' : 'abaixo'} de R$ ${alert.targetPrice.toFixed(2)})`,
+            'alert'
+          );
+
+          // Browser notification if permitted
+          if ("Notification" in window && Notification.permission === "granted") {
+            new Notification(`Bolsa Tracker: ${stock.symbol}`, {
+              body: `${stock.symbol} atingiu R$ ${stock.regularMarketPrice.toFixed(2)}`,
+              icon: '/vite.svg'
+            });
+          }
+
+          return { ...alert, isTriggered: true, triggeredAt: new Date().toISOString() };
+        }
+        return alert;
+      });
+      return changed ? newAlerts : prevAlerts;
+    });
+  }, [addNotification]);
 
   const fetchAllData = useCallback(async (symbols: string[], selectedRange: string) => {
     if (symbols.length === 0) {
@@ -83,6 +193,7 @@ export default function App() {
           setError('Nenhuma das ações foi encontrada.');
         }
         setStocksData(validResults);
+        checkAlerts(validResults);
       } else {
         setError('Erro ao processar as ações. Verifique os códigos.');
       }
@@ -122,12 +233,15 @@ export default function App() {
   };
 
   // Combine historical data into a single format for Recharts
-  // We need to use dates as keys
   const getChartData = () => {
     const dataMap: Record<string, any> = {};
     
     stocksData.forEach((stock) => {
-      stock.historicalDataPrice?.forEach((day) => {
+      const prices = stock.historicalDataPrice?.map(d => d.close) || [];
+      const smaValues = indicatorSettings.showSMA ? calculateSMA(prices, indicatorSettings.smaPeriod) : [];
+      const rsiValues = indicatorSettings.showRSI ? calculateRSI(prices, indicatorSettings.rsiPeriod) : [];
+
+      stock.historicalDataPrice?.forEach((day, idx) => {
         const dateObj = new Date(day.date * 1000);
         const dateStr = dateObj.toLocaleDateString('pt-BR', { 
           day: range === '1mo' || range === '3mo' ? '2-digit' : undefined, 
@@ -140,6 +254,17 @@ export default function App() {
           dataMap[fullDate] = { date: dateStr, fullDate };
         }
         dataMap[fullDate][stock.symbol] = day.close;
+        
+        // Add indicators for the primary stock (optional: could add for all, but for UI we use first)
+        // Only add indicators for the FIRST stock to avoid clutter
+        if (stock.symbol === tickers[0]) {
+          if (indicatorSettings.showSMA) {
+            dataMap[fullDate][`${stock.symbol}_SMA`] = smaValues[idx];
+          }
+          if (indicatorSettings.showRSI) {
+            dataMap[fullDate][`${stock.symbol}_RSI`] = rsiValues[idx];
+          }
+        }
       });
     });
 
@@ -185,6 +310,24 @@ export default function App() {
           </form>
 
           <button 
+            onClick={() => {
+              if ("Notification" in window && Notification.permission === "default") {
+                Notification.requestPermission();
+              }
+              setShowAlertPanel(!showAlertPanel);
+            }}
+            className={cn(
+              "p-2 hover:bg-gray-100 rounded-full transition-colors relative",
+              alerts.some(a => a.isActive && !a.isTriggered) && "text-blue-600"
+            )}
+          >
+            <Bell className="w-5 h-5 text-gray-600" />
+            {alerts.some(a => a.isActive && !a.isTriggered) && (
+              <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-blue-600 rounded-full border-2 border-white" />
+            )}
+          </button>
+
+          <button 
             onClick={() => fetchAllData(tickers, range)}
             disabled={loading}
             className="p-2 hover:bg-gray-100 rounded-full transition-colors disabled:opacity-50"
@@ -196,29 +339,102 @@ export default function App() {
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         {/* Tickers List */}
-        <div className="flex flex-wrap gap-2 mb-6">
-          {tickers.map((t, idx) => (
-            <div 
-              key={t} 
-              className={cn(
-                "flex items-center gap-2 px-3 py-1.5 rounded-full border shadow-sm transition-all animate-in fade-in zoom-in-95",
-                stocksData.some(s => s.symbol === t) ? "bg-white" : "bg-gray-100 opacity-60"
-              )}
-              style={{ borderLeftColor: COLORS[idx], borderLeftWidth: '4px' }}
-            >
-              <span className="text-sm font-bold tracking-wide">{t}</span>
-              <button 
-                onClick={() => removeTicker(t)}
-                className="hover:bg-gray-100 p-0.5 rounded-full transition-colors"
+        <div className="flex flex-col sm:flex-row items-center justify-between gap-4 mb-6">
+          <div className="flex flex-wrap gap-2">
+            {tickers.map((t, idx) => (
+              <div 
+                key={t} 
+                className={cn(
+                  "flex items-center gap-2 px-3 py-1.5 rounded-full border shadow-sm transition-all animate-in fade-in zoom-in-95",
+                  stocksData.some(s => s.symbol === t) ? "bg-white" : "bg-gray-100 opacity-60"
+                )}
+                style={{ borderLeftColor: COLORS[idx], borderLeftWidth: '4px' }}
               >
-                <X className="w-3.5 h-3.5 text-gray-400" />
-              </button>
-            </div>
-          ))}
-          {tickers.length === 0 && !loading && (
-            <p className="text-sm text-gray-500 font-medium italic">Nenhuma ação selecionada para comparação.</p>
-          )}
+                <span className="text-sm font-bold tracking-wide">{t}</span>
+                <button 
+                  onClick={() => removeTicker(t)}
+                  className="hover:bg-gray-100 p-0.5 rounded-full transition-colors"
+                >
+                  <X className="w-3.5 h-3.5 text-gray-400" />
+                </button>
+              </div>
+            ))}
+            {tickers.length === 0 && !loading && (
+              <p className="text-sm text-gray-500 font-medium italic">Nenhuma ação selecionada para comparação.</p>
+            )}
+          </div>
+
+          <button 
+            onClick={() => setShowTechnical(!showTechnical)}
+            className={cn(
+              "flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold transition-all",
+              showTechnical ? "bg-blue-600 text-white" : "bg-white text-gray-600 border border-gray-200 hover:border-blue-400"
+            )}
+          >
+            <Settings2 className="w-4 h-4" />
+            Indicadores Técnicos
+            {showTechnical ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+          </button>
         </div>
+
+        {/* Technical Settings Panel */}
+        {showTechnical && (
+          <div className="mb-8 grid grid-cols-1 md:grid-cols-2 gap-6 p-6 bg-white rounded-2xl border border-gray-200 shadow-sm animate-in fade-in slide-in-from-top-4">
+            <div className="space-y-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <input 
+                    type="checkbox" 
+                    id="smaToggle"
+                    checked={indicatorSettings.showSMA}
+                    onChange={(e) => setIndicatorSettings(prev => ({ ...prev, showSMA: e.target.checked }))}
+                    className="w-4 h-4 rounded text-blue-600 focus:ring-blue-500"
+                  />
+                  <label htmlFor="smaToggle" className="text-sm font-bold text-gray-700">Média Móvel Simples (SMA)</label>
+                </div>
+                {indicatorSettings.showSMA && (
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-gray-400">Período:</span>
+                    <input 
+                      type="number"
+                      value={indicatorSettings.smaPeriod}
+                      onChange={(e) => setIndicatorSettings(prev => ({ ...prev, smaPeriod: parseInt(e.target.value) || 1 }))}
+                      className="w-14 px-2 py-1 text-xs border border-gray-200 rounded focus:border-blue-500 outline-none"
+                    />
+                  </div>
+                )}
+              </div>
+              <p className="text-xs text-gray-400 italic">Exibida sobre o gráfico de preço para o ativo principal ({tickers[0]}).</p>
+            </div>
+
+            <div className="space-y-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <input 
+                    type="checkbox" 
+                    id="rsiToggle"
+                    checked={indicatorSettings.showRSI}
+                    onChange={(e) => setIndicatorSettings(prev => ({ ...prev, showRSI: e.target.checked }))}
+                    className="w-4 h-4 rounded text-blue-600 focus:ring-blue-500"
+                  />
+                  <label htmlFor="rsiToggle" className="text-sm font-bold text-gray-700">Índice de Força Relativa (RSI)</label>
+                </div>
+                {indicatorSettings.showRSI && (
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-gray-400">Período:</span>
+                    <input 
+                      type="number"
+                      value={indicatorSettings.rsiPeriod}
+                      onChange={(e) => setIndicatorSettings(prev => ({ ...prev, rsiPeriod: parseInt(e.target.value) || 1 }))}
+                      className="w-14 px-2 py-1 text-xs border border-gray-200 rounded focus:border-blue-500 outline-none"
+                    />
+                  </div>
+                )}
+              </div>
+              <p className="text-xs text-gray-400 italic">Exibido em um gráfico separado monitorando sobrecompra/sobrevenda.</p>
+            </div>
+          </div>
+        )}
 
         {error && (
           <div className="mb-6 p-4 bg-red-50 border border-red-100 rounded-xl flex items-center gap-3 text-red-700 animate-in fade-in slide-in-from-top-2">
@@ -297,11 +513,68 @@ export default function App() {
                         dot={false}
                         activeDot={{ r: 6, strokeWidth: 0 }}
                         animationDuration={1500}
+                        name={stock.symbol}
                       />
                     ))}
+                    {indicatorSettings.showSMA && stocksData.length > 0 && (
+                      <Line 
+                        type="monotone" 
+                        dataKey={`${tickers[0]}_SMA`} 
+                        stroke="#9333ea" 
+                        strokeWidth={1.5}
+                        strokeDasharray="5 5"
+                        dot={false}
+                        name={`SMA ${indicatorSettings.smaPeriod} (${tickers[0]})`}
+                        animationDuration={1500}
+                      />
+                    )}
                   </LineChart>
                 </ResponsiveContainer>
               </div>
+
+              {/* RSI Chart Section */}
+              {indicatorSettings.showRSI && stocksData.length > 0 && (
+                <div className="mt-8 pt-8 border-t border-gray-100">
+                  <h3 className="text-sm font-bold text-gray-400 uppercase tracking-widest mb-4">Oscilador RSI ({tickers[0]})</h3>
+                  <div className="h-[200px] w-full">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <LineChart data={chartData}>
+                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#F0F0F0" />
+                        <XAxis 
+                          dataKey="date" 
+                          axisLine={false}
+                          tickLine={false}
+                          tick={{ fontSize: 10, fill: '#9CA3AF' }}
+                          dy={10}
+                          minTickGap={30}
+                        />
+                        <YAxis 
+                          axisLine={false}
+                          tickLine={false}
+                          tick={{ fontSize: 10, fill: '#9CA3AF' }}
+                          domain={[0, 100]}
+                          ticks={[0, 30, 70, 100]}
+                        />
+                        <Tooltip 
+                          contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
+                          formatter={(value: number) => [value.toFixed(2), 'RSI']}
+                        />
+                        <ReferenceLine y={70} stroke="#f43f5e" strokeDasharray="3 3" label={{ value: 'Sobrecompra', position: 'insideRight', fill: '#f43f5e', fontSize: 10 }} />
+                        <ReferenceLine y={30} stroke="#10b981" strokeDasharray="3 3" label={{ value: 'Sobrevenda', position: 'insideRight', fill: '#10b981', fontSize: 10 }} />
+                        <Line 
+                          type="monotone" 
+                          dataKey={`${tickers[0]}_RSI`} 
+                          stroke="#6366f1" 
+                          strokeWidth={2}
+                          dot={false}
+                          name="RSI"
+                          animationDuration={1500}
+                        />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Detailed Cards Grid */}
@@ -325,19 +598,82 @@ export default function App() {
                           {stock.shortName}
                         </h3>
                       </div>
-                      <div className="text-right">
-                        <div className="text-xl font-black tracking-tighter">
-                          R$ {stock.regularMarketPrice.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                      <div className="text-right flex flex-col items-end gap-2">
+                        <div>
+                          <div className="text-xl font-black tracking-tighter">
+                            R$ {stock.regularMarketPrice.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                          </div>
+                          <div className={cn(
+                            "flex items-center justify-end gap-0.5 font-bold text-xs",
+                            isPositive ? "text-emerald-600" : "text-rose-600"
+                          )}>
+                            {isPositive ? <ArrowUpRight className="w-3 h-3" /> : <ArrowDownRight className="w-3 h-3" />}
+                            {stock.regularMarketChangePercent.toFixed(2)}%
+                          </div>
                         </div>
-                        <div className={cn(
-                          "flex items-center justify-end gap-0.5 font-bold text-xs",
-                          isPositive ? "text-emerald-600" : "text-rose-600"
-                        )}>
-                          {isPositive ? <ArrowUpRight className="w-3 h-3" /> : <ArrowDownRight className="w-3 h-3" />}
-                          {stock.regularMarketChangePercent.toFixed(2)}%
-                        </div>
+                        <button 
+                          onClick={() => setAlertForm({ symbol: stock.symbol, targetPrice: stock.regularMarketPrice.toString(), condition: 'above' })}
+                          className="p-1.5 bg-gray-100 text-gray-500 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-all"
+                          title="Definir alerta de preço"
+                        >
+                          <Bell className="w-3.5 h-3.5" />
+                        </button>
                       </div>
                     </div>
+
+                    {/* Alert Form Overlay inside Card */}
+                    {alertForm?.symbol === stock.symbol && (
+                      <div className="mb-4 p-4 bg-blue-50 rounded-xl border border-blue-100 animate-in zoom-in-95 duration-200">
+                        <div className="flex items-center justify-between mb-3">
+                          <h4 className="text-xs font-bold text-blue-800 flex items-center gap-1.5">
+                            <BellRing className="w-3.5 h-3.5" />
+                            Novo Alerta
+                          </h4>
+                          <button onClick={() => setAlertForm(null)}>
+                            <X className="w-3.5 h-3.5 text-blue-400" />
+                          </button>
+                        </div>
+                        <div className="space-y-3">
+                          <div className="flex gap-2">
+                            <button 
+                              onClick={() => setAlertForm(prev => prev ? { ...prev, condition: 'above' } : null)}
+                              className={cn(
+                                "flex-1 py-1 text-[10px] font-bold rounded-md border transition-all",
+                                alertForm.condition === 'above' ? "bg-blue-600 text-white border-blue-600" : "bg-white text-blue-600 border-blue-200"
+                              )}
+                            >
+                              Acima de
+                            </button>
+                            <button 
+                              onClick={() => setAlertForm(prev => prev ? { ...prev, condition: 'below' } : null)}
+                              className={cn(
+                                "flex-1 py-1 text-[10px] font-bold rounded-md border transition-all",
+                                alertForm.condition === 'below' ? "bg-rose-600 text-white border-rose-600" : "bg-white text-rose-600 border-rose-200"
+                              )}
+                            >
+                              Abaixo de
+                            </button>
+                          </div>
+                          <div className="flex gap-2">
+                            <input 
+                              type="number"
+                              step="0.01"
+                              value={alertForm.targetPrice}
+                              onChange={(e) => setAlertForm(prev => prev ? { ...prev, targetPrice: e.target.value } : null)}
+                              className="flex-1 px-3 py-1.5 text-xs rounded-lg border border-blue-200 outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-400 transition-all font-bold"
+                              placeholder="Valor alvo..."
+                            />
+                            <button 
+                              disabled={!alertForm.targetPrice || isNaN(parseFloat(alertForm.targetPrice))}
+                              onClick={() => addAlert(stock.symbol, parseFloat(alertForm.targetPrice), alertForm.condition)}
+                              className="px-3 py-1.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors"
+                            >
+                              <Plus className="w-4 h-4" />
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    )}
                     
                     <div className="mt-auto pt-4 border-t border-gray-50 grid grid-cols-2 gap-x-4 gap-y-2">
                         <div className="flex flex-col">
@@ -435,6 +771,85 @@ export default function App() {
         )}
       </main>
 
+      {/* Alert Management Panel */}
+      {showAlertPanel && (
+        <div className="fixed inset-0 z-40 overflow-hidden">
+          <div className="absolute inset-0 bg-black/20 backdrop-blur-sm" onClick={() => setShowAlertPanel(false)} />
+          <div className="absolute right-0 top-0 bottom-0 w-full max-w-sm bg-white shadow-2xl flex flex-col animate-in slide-in-from-right duration-300">
+            <div className="p-6 border-b border-gray-100 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <BellRing className="w-5 h-5 text-blue-600" />
+                <h3 className="text-lg font-bold">Meus Alertas</h3>
+              </div>
+              <button 
+                onClick={() => setShowAlertPanel(false)}
+                className="p-2 hover:bg-gray-100 rounded-full transition-colors"
+              >
+                <X className="w-5 h-5 text-gray-400" />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-6 space-y-4">
+              {alerts.length === 0 ? (
+                <div className="text-center py-12">
+                  <Bell className="w-12 h-12 text-gray-200 mx-auto mb-4" />
+                  <p className="text-gray-500 text-sm">Você ainda não definiu nenhum alerta de preço.</p>
+                </div>
+              ) : (
+                alerts.sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map(alert => (
+                  <div 
+                    key={alert.id}
+                    className={cn(
+                      "p-4 rounded-2xl border transition-all relative overflow-hidden",
+                      alert.isTriggered 
+                        ? "bg-rose-50 border-rose-100" 
+                        : "bg-white border-gray-100 hover:border-blue-200"
+                    )}
+                  >
+                    <div className="flex items-center justify-between mb-2">
+                       <span className="text-sm font-bold text-gray-900">{alert.symbol}</span>
+                       <button 
+                         onClick={() => removeAlert(alert.id)}
+                         className="p-1 text-gray-400 hover:text-rose-600 hover:bg-rose-50 rounded transition-all"
+                       >
+                         <Trash2 className="w-4 h-4" />
+                       </button>
+                    </div>
+                    
+                    <div className="flex items-center gap-2">
+                      <div className={cn(
+                        "text-xs font-bold px-2 py-0.5 rounded",
+                        alert.condition === 'above' ? "bg-blue-100 text-blue-700" : "bg-rose-100 text-rose-700"
+                      )}>
+                        {alert.condition === 'above' ? 'Acima' : 'Abaixo'}
+                      </div>
+                      <span className="text-lg font-black tracking-tighter">R$ {alert.targetPrice.toFixed(2)}</span>
+                    </div>
+
+                    {alert.isTriggered ? (
+                      <div className="mt-3 flex items-center gap-1.5 text-rose-600 text-[10px] font-bold uppercase tracking-wider">
+                        <AlertTriangle className="w-3 h-3" />
+                        Atingido em {new Date(alert.triggeredAt!).toLocaleTimeString('pt-BR')}
+                      </div>
+                    ) : (
+                      <div className="mt-3 text-[10px] text-gray-400 font-bold uppercase tracking-wider">
+                        Ativo • Criado em {new Date(alert.createdAt).toLocaleDateString('pt-BR')}
+                      </div>
+                    )}
+                  </div>
+                ))
+              )}
+            </div>
+
+            <div className="p-6 bg-gray-50 border-t border-gray-100">
+               <p className="text-[10px] text-gray-400 font-bold uppercase text-center leading-relaxed">
+                 O aplicativo verifica os preços sempre que a página é atualizada ou os dados são recarregados.
+               </p>
+            </div>
+          </div>
+        </div>
+      )}
+
       <footer className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 border-t border-gray-200 mt-auto">
         <div className="flex flex-col md:flex-row items-center justify-between gap-4 text-sm text-gray-500">
           <p>© 2026 Bolsa Tracker. Dados fornecidos por Brapi.</p>
@@ -445,6 +860,33 @@ export default function App() {
           </div>
         </div>
       </footer>
+
+      {/* Notifications Toast */}
+      <div className="fixed bottom-6 right-6 z-50 flex flex-col gap-3 pointer-events-none">
+        {notifications.map((n) => (
+          <div 
+            key={n.id}
+            className={cn(
+              "p-4 rounded-2xl shadow-xl border w-80 animate-in slide-in-from-right-4 fade-in duration-300 pointer-events-auto",
+              n.type === 'alert' ? "bg-rose-600 border-rose-500 text-white" : "bg-white border-gray-100 text-gray-900"
+            )}
+          >
+            <div className="flex items-start gap-3">
+              {n.type === 'alert' ? <BellRing className="w-5 h-5 shrink-0" /> : <CheckCircle2 className="w-5 h-5 shrink-0 text-emerald-500" />}
+              <div>
+                <h4 className="text-sm font-bold">{n.title}</h4>
+                <p className="text-xs opacity-90 mt-0.5">{n.message}</p>
+              </div>
+              <button 
+                onClick={() => setNotifications(prev => prev.filter(item => item.id !== n.id))}
+                className="ml-auto opacity-60 hover:opacity-100"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
