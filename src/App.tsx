@@ -88,6 +88,9 @@ interface StockData {
   regularMarketDayHigh: number;
   regularMarketDayLow: number;
   regularMarketVolume: number;
+  priceEarnings?: number;
+  marketCap?: number;
+  dividendYield?: number;
   historicalDataPrice: {
     date: number;
     close: number;
@@ -163,6 +166,9 @@ export default function App() {
           regularMarketDayHigh: s.close, // List endpoint has limited data
           regularMarketDayLow: s.close,
           regularMarketVolume: s.volume,
+          priceEarnings: s.priceEarnings,
+          marketCap: s.marketCap,
+          dividendYield: s.dividendYield,
           historicalDataPrice: []
         }));
         setTop10Data(formattedData);
@@ -817,7 +823,28 @@ export default function App() {
                       </div>
                     )}
                     
-                    <div className="mt-auto pt-4 border-t border-gray-50 grid grid-cols-2 gap-x-4 gap-y-2">
+                    <div className="mt-4 pt-4 border-t border-gray-50 grid grid-cols-2 gap-x-4 gap-y-3">
+                        <div className="flex flex-col">
+                          <span className="text-[10px] uppercase font-bold text-gray-400 tracking-wider">P/L</span>
+                          <span className="text-xs font-bold">{stock.priceEarnings ? stock.priceEarnings.toFixed(2) : '-'}</span>
+                        </div>
+                        <div className="flex flex-col text-right">
+                          <span className="text-[10px] uppercase font-bold text-gray-400 tracking-wider">Div. Yield</span>
+                          <span className="text-xs font-bold text-emerald-600">{stock.dividendYield ? `${(stock.dividendYield * 100).toFixed(2)}%` : '-'}</span>
+                        </div>
+                        <div className="flex flex-col col-span-2">
+                          <span className="text-[10px] uppercase font-bold text-gray-400 tracking-wider">Vlr. de Mercado</span>
+                          <span className="text-xs font-bold">
+                            {stock.marketCap 
+                              ? stock.marketCap >= 1e9 
+                                ? `R$ ${(stock.marketCap / 1e9).toFixed(2)}B`
+                                : `R$ ${(stock.marketCap / 1e6).toFixed(2)}M`
+                              : '-'}
+                          </span>
+                        </div>
+                    </div>
+                    
+                    <div className="mt-4 pt-4 border-t border-gray-50 border-dashed grid grid-cols-2 gap-x-4 gap-y-2">
                         <div className="flex flex-col">
                           <span className="text-[10px] uppercase font-bold text-gray-400 tracking-wider">Máxima</span>
                           <span className="text-xs font-bold">R$ {stock.regularMarketDayHigh.toFixed(2)}</span>
