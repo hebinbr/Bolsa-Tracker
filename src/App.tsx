@@ -91,6 +91,11 @@ interface StockData {
   priceEarnings?: number;
   marketCap?: number;
   dividendYield?: number;
+  longBusinessSummary?: string;
+  sector?: string;
+  industry?: string;
+  website?: string;
+  logoUrl?: string;
   historicalDataPrice: {
     date: number;
     close: number;
@@ -123,9 +128,15 @@ export default function App() {
   const [alertForm, setAlertForm] = useState<{ symbol: string; targetPrice: string; condition: 'above' | 'below' } | null>(null);
   const [top10Data, setTop10Data] = useState<StockData[]>([]);
   const [top10Loading, setTop10Loading] = useState(false);
+  const [fiiData, setFiiData] = useState<StockData[]>([]);
+  const [fiiLoading, setFiiLoading] = useState(false);
   const [news, setNews] = useState<NewsItem[]>([]);
   const [newsLoading, setNewsLoading] = useState(false);
+  const [newsError, setNewsError] = useState<string | null>(null);
   const [sidebarSymbolInput, setSidebarSymbolInput] = useState('');
+  const [selectedStock, setSelectedStock] = useState<StockData | null>(null);
+  const [stockNews, setStockNews] = useState<NewsItem[]>([]);
+  const [stockNewsLoading, setStockNewsLoading] = useState(false);
 
   // Perist tickers and alerts
   useEffect(() => {
@@ -136,28 +147,154 @@ export default function App() {
     localStorage.setItem('bolsa-tracker-alerts', JSON.stringify(alerts));
   }, [alerts]);
 
+  const fetchStockSpecificNews = useCallback(async (symbol: string) => {
+    setStockNewsLoading(true);
+    try {
+      const targetUrl = `https://brapi.dev/api/news?q=${symbol}&token=${BRAPI_TOKEN}`;
+      
+      // Strategy 1: Direct Fetch
+      try {
+        const response = await fetch(targetUrl);
+        if (response.ok) {
+          const result = await response.json();
+          if (result.news) {
+            setStockNews(result.news);
+            setStockNewsLoading(false);
+            return;
+          }
+        }
+      } catch (e) {
+        console.warn(`Direct fetch failed for ${symbol}, trying proxy...`);
+      }
+
+      // Strategy 2: Proxy Fallback (corsproxy.io)
+      try {
+        const proxyUrl = `https://corsproxy.io/?url=${encodeURIComponent(targetUrl)}`;
+        const response = await fetch(proxyUrl);
+        if (response.ok) {
+          const result = await response.json();
+          if (result.news) {
+            setStockNews(result.news);
+            setStockNewsLoading(false);
+            return;
+          }
+        }
+      } catch (e) {
+        console.warn(`Proxy fetch failed for ${symbol}, trying allorigins...`);
+      }
+
+      // Strategy 3: Proxy Fallback (allorigins)
+      try {
+        const allOriginsUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(targetUrl)}`;
+        const response = await fetch(allOriginsUrl);
+        if (response.ok) {
+          const data = await response.json();
+          const result = JSON.parse(data.contents);
+          if (result.news) {
+            setStockNews(result.news);
+            setStockNewsLoading(false);
+            return;
+          }
+        }
+      } catch (e) {
+        console.error(`All strategies failed for ${symbol} news`);
+      }
+
+      setStockNews([]);
+    } catch (err) {
+      console.error(`Erro crítico ao buscar notícias para ${symbol}:`, err);
+      setStockNews([]);
+    } finally {
+      setStockNewsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (selectedStock) {
+      fetchStockSpecificNews(selectedStock.symbol);
+    } else {
+      setStockNews([]);
+    }
+  }, [selectedStock, fetchStockSpecificNews]);
+
   const fetchNews = useCallback(async (symbols: string[]) => {
     if (symbols.length === 0) {
       setNews([]);
+      setNewsError(null);
       return;
     }
     setNewsLoading(true);
-    try {
-      // Brapi's news endpoint works better with one symbol or a query
-      // We'll fetch for the first ticker which is usually the primary focus
-      const symbol = symbols[0];
-      const response = await fetch(
-        `https://brapi.dev/api/news?q=${symbol}&token=${BRAPI_TOKEN}`
-      );
-      const result = await response.json();
-      if (result.news) {
-        setNews(result.news);
+    setNewsError(null);
+    
+    const symbol = symbols[0];
+    const targetUrl = `https://brapi.dev/api/news?q=${symbol}&token=${BRAPI_TOKEN}`;
+    const targetUrlV2 = `https://brapi.dev/api/v2/news?tickers=${symbol}&token=${BRAPI_TOKEN}`;
+
+    const urls = [targetUrl, targetUrlV2];
+    let success = false;
+    let fallbackUsed = false;
+
+    // Strategy 1: Direct Fetch with fallbacks
+    for (const url of urls) {
+      try {
+        const response = await fetch(url);
+        if (response.ok) {
+          const result = await response.json();
+          if (result.news && result.news.length > 0) {
+            setNews(result.news);
+            success = true;
+            break;
+          }
+        }
+      } catch (err) {
+        console.warn(`Direct fetch failed for ${url}, will try proxies.`);
       }
-    } catch (err) {
-      console.error('Erro ao buscar notícias:', err);
-    } finally {
-      setNewsLoading(false);
     }
+
+    // Strategy 2: Proxy Fallback 1
+    if (!success) {
+      try {
+        const proxyUrl = `https://corsproxy.io/?url=${encodeURIComponent(targetUrl)}`;
+        const response = await fetch(proxyUrl);
+        if (response.ok) {
+          const result = await response.json();
+          if (result.news) {
+            setNews(result.news);
+            success = true;
+            fallbackUsed = true;
+          }
+        }
+      } catch (err) {
+        console.warn('Corsproxy failed, trying next...');
+      }
+    }
+
+    // Strategy 3: Proxy Fallback 2
+    if (!success) {
+      try {
+        const allOriginsUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(targetUrl)}`;
+        const response = await fetch(allOriginsUrl);
+        if (response.ok) {
+          const data = await response.json();
+          const result = JSON.parse(data.contents);
+          if (result.news) {
+            setNews(result.news);
+            success = true;
+            fallbackUsed = true;
+          }
+        }
+      } catch (err) {
+        console.warn('Allorigins failed.');
+      }
+    }
+
+    if (!success) {
+      setNewsError('Não foi possível carregar as notícias devido a restrições de rede ou limite da API.');
+    } else if (fallbackUsed) {
+      console.log('Notícias carregadas via proxy com sucesso.');
+    }
+    
+    setNewsLoading(false);
   }, []);
 
   const fetchTop10 = useCallback(async () => {
@@ -193,6 +330,24 @@ export default function App() {
       console.error('Erro ao buscar Top 10:', err);
     } finally {
       setTop10Loading(false);
+    }
+  }, []);
+
+  const fetchFiiData = useCallback(async () => {
+    setFiiLoading(true);
+    try {
+      const symbolsStr = FAVORITE_FIIS.join(',');
+      const response = await fetch(
+        `https://brapi.dev/api/quote/${symbolsStr}?token=${BRAPI_TOKEN}`
+      );
+      const result = await response.json();
+      if (result.results) {
+        setFiiData(result.results);
+      }
+    } catch (err) {
+      console.error('Erro ao buscar FIIs:', err);
+    } finally {
+      setFiiLoading(false);
     }
   }, []);
 
@@ -305,7 +460,7 @@ export default function App() {
     try {
       const symbolsStr = symbols.join(',');
       const response = await fetch(
-        `https://brapi.dev/api/quote/${symbolsStr}?range=${selectedRange}&interval=1d&token=${BRAPI_TOKEN}`
+        `https://brapi.dev/api/quote/${symbolsStr}?range=${selectedRange}&interval=1d&token=${BRAPI_TOKEN}&fundamental=true`
       );
       const result = await response.json();
 
@@ -342,9 +497,35 @@ export default function App() {
 
   useEffect(() => {
     fetchTop10();
-    const interval = setInterval(fetchTop10, 60000); // Atualiza a cada 1 minuto
+    fetchFiiData();
+    const interval = setInterval(() => {
+      fetchTop10();
+      fetchFiiData();
+    }, 60000); // Atualiza a cada 1 minuto
     return () => clearInterval(interval);
-  }, [fetchTop10]);
+  }, [fetchTop10, fetchFiiData]);
+
+  const openDetails = useCallback((symbol: string) => {
+    const stock = stocksData.find(s => s.symbol === symbol) || 
+                  top10Data.find(s => s.symbol === symbol) ||
+                  fiiData.find(s => s.symbol === symbol);
+    if (stock) {
+      setSelectedStock(stock);
+    }
+  }, [stocksData, top10Data, fiiData]);
+
+  const addToComparison = useCallback((symbol: string) => {
+    if (!tickers.includes(symbol) && tickers.length < 3) {
+      setTickers(prev => [...prev, symbol]);
+      return true;
+    } else if (tickers.includes(symbol)) {
+      setError('Esta ação já está na comparação.');
+      return false;
+    } else {
+      setError('Limite de 3 ações atingido.');
+      return false;
+    }
+  }, [tickers]);
 
   const handleSearch = (e: FormEvent) => {
     e.preventDefault();
@@ -433,7 +614,7 @@ export default function App() {
                 type="text"
                 value={searchInput}
                 onChange={(e) => setSearchInput(e.target.value)}
-                placeholder="Adicionar ação (ex: PETR4, VALE3)..."
+                placeholder="Ativos (ex: PETR4, HGLG11, VALE3)..."
                 className="w-full bg-gray-100 border-transparent focus:bg-white focus:border-blue-600 focus:ring-4 focus:ring-blue-100 rounded-xl py-2 pl-10 pr-10 text-sm transition-all outline-none"
               />
               <button 
@@ -492,44 +673,49 @@ export default function App() {
               {top10Data.length > 0 ? (
                 top10Data.map((stock) => {
                   const isPositive = stock.regularMarketChange >= 0;
+                  const isTracked = tickers.includes(stock.symbol);
                   return (
-                    <motion.button
+                    <motion.div
                       layout
                       key={stock.symbol}
                       initial={{ opacity: 0, y: 10 }}
                       animate={{ opacity: 1, y: 0 }}
-                      onClick={() => {
-                        if (!tickers.includes(stock.symbol) && tickers.length < 3) {
-                          setTickers(prev => [...prev, stock.symbol]);
-                        } else if (tickers.includes(stock.symbol)) {
-                          setError('Esta ação já está na comparação.');
-                        } else {
-                          setError('Limite de 3 ações atingido.');
-                        }
-                      }}
-                      className="flex-shrink-0 bg-white border border-gray-100 rounded-2xl p-4 shadow-sm hover:shadow-md hover:border-blue-200 transition-all text-left min-w-[140px]"
+                      className={cn(
+                        "flex-shrink-0 bg-white border rounded-2xl p-4 shadow-sm transition-all text-left min-w-[160px] relative group/top",
+                        isTracked ? "border-blue-400 ring-2 ring-blue-50" : "border-gray-100 hover:border-blue-200 hover:shadow-md"
+                      )}
                     >
-                      <div className="flex flex-col gap-1">
-                        <span className="text-xs font-black text-blue-600">{stock.symbol}</span>
+                      <button 
+                        onClick={() => addToComparison(stock.symbol)}
+                        className="flex flex-col gap-1 w-full"
+                      >
+                        <span className="text-xs font-black text-blue-600 uppercase tracking-tighter">{stock.symbol}</span>
                         <div className="flex items-baseline gap-2">
-                          <span className="text-sm font-bold text-gray-900">
+                          <span className="text-base font-black text-gray-900 tracking-tighter">
                             R$ {stock.regularMarketPrice.toFixed(2)}
                           </span>
                         </div>
                         <div className={cn(
-                          "text-[10px] font-bold flex items-center gap-0.5",
+                          "text-[10px] font-black flex items-center gap-0.5 mt-0.5",
                           isPositive ? "text-emerald-600" : "text-rose-600"
                         )}>
                           {isPositive ? <ArrowUpRight className="w-3 h-3" /> : <ArrowDownRight className="w-3 h-3" />}
                           {stock.regularMarketChangePercent.toFixed(2)}%
                         </div>
-                      </div>
-                    </motion.button>
+                      </button>
+                      <button 
+                        onClick={() => setSelectedStock(stock)}
+                        className="absolute top-2 right-2 p-1.5 text-gray-300 hover:text-blue-500 hover:bg-blue-50 rounded-lg transition-all opacity-0 group-hover/top:opacity-100"
+                        title="Ver detalhes"
+                      >
+                        <AlertCircle className="w-4 h-4" />
+                      </button>
+                    </motion.div>
                   );
                 })
               ) : (
-                Array.from({ length: 10 }).map((_, i) => (
-                  <div key={i} className="flex-shrink-0 w-[140px] h-[82px] bg-gray-100 rounded-2xl animate-pulse" />
+                Array.from({ length: 6 }).map((_, i) => (
+                  <div key={i} className="flex-shrink-0 w-[160px] h-[94px] bg-white border border-gray-100 rounded-2xl animate-pulse" />
                 ))
               )}
             </AnimatePresence>
@@ -538,22 +724,27 @@ export default function App() {
 
         {/* Tickers List */}
         <div className="flex flex-col sm:flex-row items-center justify-between gap-4 mb-6">
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-wrap gap-3">
             {tickers.map((t, idx) => (
               <div 
                 key={t} 
-                className={cn(
-                  "flex items-center gap-2 px-3 py-1.5 rounded-full border shadow-sm transition-all animate-in fade-in zoom-in-95",
-                  stocksData.some(s => s.symbol === t) ? "bg-white" : "bg-gray-100 opacity-60"
-                )}
-                style={{ borderLeftColor: COLORS[idx], borderLeftWidth: '4px' }}
+                className="flex items-center bg-[#E5E7EB] rounded-xl h-11 border border-gray-300 shadow-sm overflow-hidden animate-in fade-in zoom-in-95 group transition-all hover:border-blue-400"
               >
-                <span className="text-sm font-bold tracking-wide">{t}</span>
+                <div 
+                  className="w-1.5 h-full rounded-r-sm mr-3 transition-colors" 
+                  style={{ backgroundColor: COLORS[idx] }}
+                />
+                <button 
+                  onClick={() => openDetails(t)}
+                  className="text-sm font-black tracking-tight text-gray-900 hover:text-blue-600 transition-colors uppercase pr-2"
+                >
+                  {t}
+                </button>
                 <button 
                   onClick={() => removeTicker(t)}
-                  className="hover:bg-gray-100 p-0.5 rounded-full transition-colors"
+                  className="p-1 hover:bg-gray-300 rounded-full transition-colors mr-2"
                 >
-                  <X className="w-3.5 h-3.5 text-gray-400" />
+                  <X className="w-3.5 h-3.5 text-gray-400 group-hover:text-gray-600" />
                 </button>
               </div>
             ))}
@@ -565,13 +756,13 @@ export default function App() {
           <button 
             onClick={() => setShowTechnical(!showTechnical)}
             className={cn(
-              "flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold transition-all",
-              showTechnical ? "bg-blue-600 text-white" : "bg-white text-gray-600 border border-gray-200 hover:border-blue-400"
+              "flex items-center gap-2.5 px-6 py-3 rounded-2xl text-sm font-black transition-all shadow-sm ring-1 ring-gray-200",
+              showTechnical ? "bg-blue-600 text-white ring-blue-600" : "bg-white text-gray-700 hover:bg-gray-50 hover:ring-blue-300"
             )}
           >
-            <Settings2 className="w-4 h-4" />
-            Indicadores Técnicos
-            {showTechnical ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+            <Settings2 className="w-4.5 h-4.5" />
+            <span>Indicadores Técnicos</span>
+            {showTechnical ? <ChevronUp className="w-4 h-4 ml-1" /> : <ChevronDown className="w-4 h-4 ml-1" />}
           </button>
         </div>
 
@@ -782,15 +973,18 @@ export default function App() {
                 return (
                   <div key={stock.symbol} className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100 flex flex-col transition-transform hover:scale-[1.02]">
                     <div className="flex justify-between items-start mb-4">
-                      <div>
+                      <div 
+                        className="cursor-pointer group flex-1"
+                        onClick={() => setSelectedStock(stock)}
+                      >
                         <div className="flex items-center gap-2 mb-1">
                           <span 
-                            className="text-xs font-bold text-white px-2 py-0.5 rounded uppercase tracking-wider"
+                            className="text-xs font-bold text-white px-2 py-0.5 rounded uppercase tracking-wider group-hover:bg-opacity-90 transition-all"
                             style={{ backgroundColor: COLORS[idx] }}
                           >
                             {stock.symbol}
                           </span>
-                          <span className="text-[10px] text-gray-400 font-bold uppercase">B3 S.A.</span>
+                          <span className="text-[10px] text-gray-400 font-bold uppercase">Ver Detalhes</span>
                         </div>
                         <h3 className="font-bold text-gray-900 group-hover:text-blue-600 transition-colors uppercase truncate max-w-[150px]">
                           {stock.shortName}
@@ -968,6 +1162,24 @@ export default function App() {
                 </div>
                 {newsLoading && <RefreshCw className="w-4 h-4 text-blue-500 animate-spin" />}
               </div>
+
+              {newsError && (
+                <div className="mb-6 p-4 bg-rose-50 rounded-2xl border border-rose-100 flex items-center justify-between gap-3 text-rose-600 animate-in fade-in slide-in-from-top-2">
+                  <div className="flex items-center gap-3">
+                    <AlertCircle className="w-5 h-5 flex-shrink-0" />
+                    <div className="flex flex-col">
+                      <span className="text-xs font-bold uppercase tracking-wider">Falha ao carregar notícias</span>
+                      <p className="text-xs font-medium opacity-80">{newsError}</p>
+                    </div>
+                  </div>
+                  <button 
+                    onClick={() => fetchNews(tickers)}
+                    className="px-3 py-1 bg-white border border-rose-200 rounded-lg text-[10px] font-black uppercase hover:bg-rose-50 transition-colors shadow-sm"
+                  >
+                    Tentar Novamente
+                  </button>
+                </div>
+              )}
 
               {news.length > 0 ? (
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -1220,6 +1432,199 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {/* Detail Modal */}
+      <AnimatePresence>
+        {selectedStock && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setSelectedStock(null)}
+              className="absolute inset-0 bg-black/60 backdrop-blur-md" 
+            />
+            <motion.div
+              initial={{ opacity: 0, scale: 0.9, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.9, y: 20 }}
+              className="relative w-full max-w-4xl max-h-[90vh] bg-white rounded-3xl shadow-2xl overflow-hidden flex flex-col"
+            >
+              {/* Modal Header */}
+              <div className="p-6 border-b border-gray-100 flex items-center justify-between bg-white sticky top-0 z-10">
+                <div className="flex items-center gap-4">
+                  {selectedStock.logoUrl && (
+                    <img src={selectedStock.logoUrl} alt={selectedStock.symbol} className="w-12 h-12 rounded-xl object-contain bg-gray-50 p-2" />
+                  )}
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-black text-blue-600 uppercase tracking-widest">{selectedStock.symbol}</span>
+                      <span className="text-[10px] py-0.5 px-2 bg-gray-100 text-gray-400 rounded-full font-bold uppercase tracking-wider">B3 S.A.</span>
+                    </div>
+                    <h2 className="text-xl font-black text-gray-900">{selectedStock.longName || selectedStock.shortName}</h2>
+                  </div>
+                </div>
+                <button 
+                  onClick={() => setSelectedStock(null)}
+                  className="p-2 hover:bg-gray-100 rounded-full transition-colors"
+                >
+                  <X className="w-6 h-6 text-gray-400" />
+                </button>
+              </div>
+
+              {/* Modal Body */}
+              <div className="flex-1 overflow-y-auto p-6 md:p-8 space-y-8">
+                {/* Statistics Grid */}
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                  <div className="p-4 bg-gray-50 rounded-2xl border border-gray-100">
+                    <span className="text-[10px] uppercase font-bold text-gray-400 tracking-wider block mb-1">Preço Atual</span>
+                    <span className="text-lg font-black tracking-tighter">R$ {selectedStock.regularMarketPrice.toFixed(2)}</span>
+                  </div>
+                  <div className="p-4 bg-gray-50 rounded-2xl border border-gray-100">
+                    <span className="text-[10px] uppercase font-bold text-gray-400 tracking-wider block mb-1">Variação</span>
+                    <span className={cn(
+                      "text-lg font-black tracking-tighter",
+                      selectedStock.regularMarketChange >= 0 ? "text-emerald-600" : "text-rose-600"
+                    )}>
+                      {selectedStock.regularMarketChangePercent.toFixed(2)}%
+                    </span>
+                  </div>
+                  <div className="p-4 bg-gray-50 rounded-2xl border border-gray-100">
+                    <span className="text-[10px] uppercase font-bold text-gray-400 tracking-wider block mb-1">P/L</span>
+                    <span className="text-lg font-black tracking-tighter">{selectedStock.priceEarnings?.toFixed(2) || '-'}</span>
+                  </div>
+                  <div className="p-4 bg-gray-50 rounded-2xl border border-gray-100">
+                    <span className="text-[10px] uppercase font-bold text-gray-400 tracking-wider block mb-1">Div. Yield</span>
+                    <span className="text-lg font-black tracking-tighter text-emerald-600">
+                      {selectedStock.dividendYield ? `${(selectedStock.dividendYield * 100).toFixed(2)}%` : '-'}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Info Section */}
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+                  <div className="md:col-span-2 space-y-6">
+                    <div>
+                      <h3 className="text-sm font-bold text-gray-400 uppercase tracking-widest mb-3 flex items-center gap-2">
+                        <Activity className="w-4 h-4" />
+                        Perfil da Empresa
+                      </h3>
+                      <p className="text-sm text-gray-600 leading-relaxed bg-blue-50/30 p-4 rounded-2xl border border-blue-100/50">
+                        {selectedStock.longBusinessSummary || "Nenhuma descrição detalhada disponível para esta empresa no momento."}
+                      </p>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      <div className="flex flex-col gap-1 p-4 rounded-2xl border border-gray-100">
+                        <span className="text-[10px] uppercase font-bold text-gray-400 tracking-wider">Setor</span>
+                        <span className="text-sm font-bold text-gray-700">{selectedStock.sector || '-'}</span>
+                      </div>
+                      <div className="flex flex-col gap-1 p-4 rounded-2xl border border-gray-100">
+                        <span className="text-[10px] uppercase font-bold text-gray-400 tracking-wider">Indústria</span>
+                        <span className="text-sm font-bold text-gray-700">{selectedStock.industry || '-'}</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="space-y-6">
+                    <div>
+                      <h3 className="text-sm font-bold text-gray-400 uppercase tracking-widest mb-3">Links e Contato</h3>
+                      <div className="bg-white rounded-2xl border border-gray-100 overflow-hidden">
+                        {selectedStock.website ? (
+                          <a 
+                            href={selectedStock.website} 
+                            target="_blank" 
+                            rel="noopener noreferrer"
+                            className="flex items-center justify-between p-4 hover:bg-gray-50 transition-colors text-sm font-bold text-blue-600"
+                          >
+                            Site Oficial
+                            <ExternalLink className="w-4 h-4" />
+                          </a>
+                        ) : (
+                          <div className="p-4 text-sm text-gray-400 italic">Site não disponível</div>
+                        )}
+                      </div>
+                    </div>
+
+                    <div>
+                      <h3 className="text-sm font-bold text-gray-400 uppercase tracking-widest mb-3">Valuation</h3>
+                      <div className="space-y-2 p-4 bg-gray-50 rounded-2xl border border-gray-100">
+                        <div className="flex justify-between text-xs">
+                          <span className="text-gray-400 font-bold uppercase">Cap. de Mercado</span>
+                          <span className="font-bold">
+                            {selectedStock.marketCap 
+                              ? selectedStock.marketCap >= 1e9 
+                                ? `R$ ${(selectedStock.marketCap / 1e9).toFixed(2)}B`
+                                : `R$ ${(selectedStock.marketCap / 1e6).toFixed(2)}M`
+                              : '-'}
+                          </span>
+                        </div>
+                        <div className="flex justify-between text-xs">
+                          <span className="text-gray-400 font-bold uppercase">Volume (24h)</span>
+                          <span className="font-bold">{(selectedStock.regularMarketVolume / 1e6).toFixed(1)}M</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* News Section */}
+                <div>
+                  <h3 className="text-sm font-bold text-gray-400 uppercase tracking-widest mb-4 flex items-center justify-between">
+                    <span className="flex items-center gap-2">
+                      <Newspaper className="w-4 h-4" />
+                      Notícias de {selectedStock.symbol}
+                    </span>
+                    {stockNewsLoading && <RefreshCw className="w-3 h-3 animate-spin text-blue-500" />}
+                  </h3>
+                  
+                  {stockNews.length > 0 ? (
+                    <div className="space-y-4">
+                      {stockNews.slice(0, 4).map((item, i) => (
+                        <a 
+                          key={i}
+                          href={item.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="flex gap-4 p-4 rounded-2xl border border-gray-100 hover:border-blue-200 hover:bg-gray-50 transition-all group"
+                        >
+                          {item.image && (
+                            <div className="w-20 h-20 shrink-0 rounded-xl overflow-hidden hidden sm:block">
+                              <img src={item.image} alt="" className="w-full h-full object-cover group-hover:scale-105 transition-transform" />
+                            </div>
+                          )}
+                          <div className="flex-1">
+                            <div className="flex items-center gap-2 mb-1">
+                              <span className="text-[10px] font-black text-blue-600 uppercase">{item.source}</span>
+                              <span className="text-[10px] text-gray-400 font-bold">• {new Date(item.publishedAt).toLocaleDateString()}</span>
+                            </div>
+                            <h4 className="text-sm font-bold text-gray-900 group-hover:text-blue-600 transition-colors line-clamp-1">{item.title}</h4>
+                            <p className="text-xs text-gray-500 line-clamp-2 mt-1">{item.description}</p>
+                          </div>
+                        </a>
+                      ))}
+                    </div>
+                  ) : !stockNewsLoading && (
+                    <div className="text-center py-10 bg-gray-50 rounded-2xl border border-dashed border-gray-200">
+                      <p className="text-xs text-gray-400 font-medium italic">Nenhuma notícia específica encontrada para este ativo.</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Modal Footer */}
+              <div className="p-4 bg-gray-50 border-t border-gray-100 text-center">
+                <button 
+                  onClick={() => setSelectedStock(null)}
+                  className="px-8 py-2.5 bg-gray-900 text-white rounded-xl text-sm font-bold hover:bg-gray-800 transition-all shadow-lg shadow-gray-200"
+                >
+                  Fechar Detalhes
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
 
       <footer className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 border-t border-gray-200 mt-auto">
         <div className="flex flex-col md:flex-row items-center justify-between gap-4 text-sm text-gray-500">
