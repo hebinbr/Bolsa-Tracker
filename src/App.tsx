@@ -98,7 +98,10 @@ interface StockData {
 }
 
 export default function App() {
-  const [tickers, setTickers] = useState<string[]>(['PETR4']);
+  const [tickers, setTickers] = useState<string[]>(() => {
+    const saved = localStorage.getItem('bolsa-tracker-tickers');
+    return saved ? JSON.parse(saved) : ['PETR4'];
+  });
   const [searchInput, setSearchInput] = useState('');
   const [range, setRange] = useState('1mo');
   const [stocksData, setStocksData] = useState<StockData[]>([]);
@@ -111,7 +114,10 @@ export default function App() {
     showRSI: false,
     rsiPeriod: 14
   });
-  const [alerts, setAlerts] = useState<PriceAlert[]>([]);
+  const [alerts, setAlerts] = useState<PriceAlert[]>(() => {
+    const saved = localStorage.getItem('bolsa-tracker-alerts');
+    return saved ? JSON.parse(saved) : [];
+  });
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
   const [showAlertPanel, setShowAlertPanel] = useState(false);
   const [alertForm, setAlertForm] = useState<{ symbol: string; targetPrice: string; condition: 'above' | 'below' } | null>(null);
@@ -119,6 +125,16 @@ export default function App() {
   const [top10Loading, setTop10Loading] = useState(false);
   const [news, setNews] = useState<NewsItem[]>([]);
   const [newsLoading, setNewsLoading] = useState(false);
+  const [sidebarSymbolInput, setSidebarSymbolInput] = useState('');
+
+  // Perist tickers and alerts
+  useEffect(() => {
+    localStorage.setItem('bolsa-tracker-tickers', JSON.stringify(tickers));
+  }, [tickers]);
+
+  useEffect(() => {
+    localStorage.setItem('bolsa-tracker-alerts', JSON.stringify(alerts));
+  }, [alerts]);
 
   const fetchNews = useCallback(async (symbols: string[]) => {
     if (symbols.length === 0) {
@@ -237,10 +253,14 @@ export default function App() {
 
           // Browser notification if permitted
           if ("Notification" in window && Notification.permission === "granted") {
-            new Notification(`Bolsa Tracker: ${stock.symbol}`, {
-              body: `${stock.symbol} atingiu R$ ${stock.regularMarketPrice.toFixed(2)}`,
-              icon: '/vite.svg'
-            });
+            try {
+              new Notification(`Bolsa Tracker: ${stock.symbol}`, {
+                body: `${stock.symbol} atingiu R$ ${stock.regularMarketPrice.toFixed(2)}`,
+                icon: 'https://brapi.dev/favicon.ico'
+              });
+            } catch (e) {
+              console.error('Erro ao enviar notificação nativa', e);
+            }
           }
 
           return { ...alert, isTriggered: true, triggeredAt: new Date().toISOString() };
@@ -250,6 +270,30 @@ export default function App() {
       return changed ? newAlerts : prevAlerts;
     });
   }, [addNotification]);
+
+  const fetchAlertPrices = useCallback(async () => {
+    const activeAlertSymbols = alerts
+      .filter(a => a.isActive && !a.isTriggered)
+      .map(a => a.symbol);
+    
+    // Also include currently tracked tickers that might not have alerts
+    const allSymbols = Array.from(new Set([...tickers, ...activeAlertSymbols]));
+    
+    if (allSymbols.length === 0) return;
+
+    try {
+      const symbolsStr = allSymbols.join(',');
+      const response = await fetch(
+        `https://brapi.dev/api/quote/${symbolsStr}?token=${BRAPI_TOKEN}`
+      );
+      const result = await response.json();
+      if (result.results) {
+        checkAlerts(result.results);
+      }
+    } catch (err) {
+      console.error('Erro ao verificar preços de alertas:', err);
+    }
+  }, [alerts, tickers, checkAlerts]);
 
   const fetchAllData = useCallback(async (symbols: string[], selectedRange: string) => {
     if (symbols.length === 0) {
@@ -266,8 +310,6 @@ export default function App() {
       const result = await response.json();
 
       if (result.results && result.results.length > 0) {
-        // Brapi returns an array even if some symbols are not found
-        // We filter out any results that don't have historical data or price
         const validResults = result.results.filter((r: any) => r.regularMarketPrice !== undefined);
         if (validResults.length === 0) {
           setError('Nenhuma das ações foi encontrada.');
@@ -283,12 +325,20 @@ export default function App() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [checkAlerts]);
 
   useEffect(() => {
     fetchAllData(tickers, range);
     fetchNews(tickers);
   }, [tickers, range, fetchAllData, fetchNews]);
+
+  // Alert check interval (every 60 seconds)
+  useEffect(() => {
+    const interval = setInterval(() => {
+      fetchAlertPrices();
+    }, 60000);
+    return () => clearInterval(interval);
+  }, [fetchAlertPrices]);
 
   useEffect(() => {
     fetchTop10();
@@ -1037,23 +1087,95 @@ export default function App() {
               </button>
             </div>
 
-            <div className="flex-1 overflow-y-auto p-6 space-y-4">
-              {alerts.length === 0 ? (
-                <div className="text-center py-12">
-                  <Bell className="w-12 h-12 text-gray-200 mx-auto mb-4" />
-                  <p className="text-gray-500 text-sm">Você ainda não definiu nenhum alerta de preço.</p>
-                </div>
-              ) : (
-                alerts.sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map(alert => (
-                  <div 
-                    key={alert.id}
-                    className={cn(
-                      "p-4 rounded-2xl border transition-all relative overflow-hidden",
-                      alert.isTriggered 
-                        ? "bg-rose-50 border-rose-100" 
-                        : "bg-white border-gray-100 hover:border-blue-200"
-                    )}
+            <div className="flex-1 overflow-y-auto p-6 space-y-6">
+              {/* Add New Alert by Symbol in Sidebar */}
+              <div className="bg-gray-50 p-4 rounded-2xl border border-gray-100">
+                <h4 className="text-xs font-bold text-gray-500 uppercase tracking-widest mb-3">Criar Alerta Rápido</h4>
+                <div className="space-y-3">
+                  <input
+                    type="text"
+                    placeholder="Símbolo (ex: PETR4)"
+                    value={sidebarSymbolInput}
+                    onChange={(e) => setSidebarSymbolInput(e.target.value.toUpperCase())}
+                    className="w-full px-3 py-2 text-sm bg-white border border-gray-200 rounded-xl focus:border-blue-500 outline-none uppercase font-bold"
+                  />
+                  <button
+                    onClick={() => {
+                      if (sidebarSymbolInput) {
+                        setAlertForm({ symbol: sidebarSymbolInput, targetPrice: '', condition: 'above' });
+                        setSidebarSymbolInput('');
+                      }
+                    }}
+                    disabled={!sidebarSymbolInput}
+                    className="w-full py-2 bg-blue-600 text-white rounded-xl text-sm font-bold shadow-sm hover:bg-blue-700 disabled:opacity-50 transition-all flex items-center justify-center gap-2"
                   >
+                    <Plus className="w-4 h-4" /> Configurar Alerta
+                  </button>
+                </div>
+              </div>
+
+              {alertForm && !stocksData.some(s => s.symbol === alertForm.symbol) && (
+                 <div className="p-4 bg-blue-50 rounded-2xl border border-blue-100 animate-in zoom-in-95">
+                    <div className="flex items-center justify-between mb-4">
+                      <h4 className="text-sm font-bold text-blue-900">{alertForm.symbol}</h4>
+                      <button onClick={() => setAlertForm(null)}>
+                        <X className="w-4 h-4 text-blue-400" />
+                      </button>
+                    </div>
+                    <div className="space-y-3">
+                      <div className="flex gap-2">
+                        <button 
+                          onClick={() => setAlertForm({ ...alertForm, condition: 'above' })}
+                          className={cn(
+                            "flex-1 py-1.5 text-xs font-bold rounded-lg border",
+                            alertForm.condition === 'above' ? "bg-blue-600 text-white border-blue-600" : "bg-white text-blue-600 border-blue-200"
+                          )}
+                        >Acima</button>
+                        <button 
+                          onClick={() => setAlertForm({ ...alertForm, condition: 'below' })}
+                          className={cn(
+                            "flex-1 py-1.5 text-xs font-bold rounded-lg border",
+                            alertForm.condition === 'below' ? "bg-rose-600 text-white border-rose-600" : "bg-white text-rose-600 border-rose-200"
+                          )}
+                        >Abaixo</button>
+                      </div>
+                      <div className="flex gap-2">
+                        <input 
+                          type="number"
+                          step="0.01"
+                          placeholder="Preço Alvo"
+                          value={alertForm.targetPrice}
+                          onChange={(e) => setAlertForm({ ...alertForm, targetPrice: e.target.value })}
+                          className="flex-1 px-3 py-2 text-sm rounded-xl border border-blue-200 outline-none"
+                        />
+                        <button 
+                          disabled={!alertForm.targetPrice}
+                          onClick={() => addAlert(alertForm.symbol, parseFloat(alertForm.targetPrice), alertForm.condition)}
+                          className="px-4 bg-blue-600 text-white rounded-xl"
+                        ><Plus className="w-4 h-4" /></button>
+                      </div>
+                    </div>
+                 </div>
+              )}
+
+              <div className="space-y-4">
+                <h4 className="text-xs font-bold text-gray-500 uppercase tracking-widest">Alertas Ativos</h4>
+                {alerts.length === 0 ? (
+                  <div className="text-center py-12">
+                    <Bell className="w-12 h-12 text-gray-200 mx-auto mb-4" />
+                    <p className="text-gray-500 text-sm">Você ainda não definiu nenhum alerta de preço.</p>
+                  </div>
+                ) : (
+                  alerts.sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map(alert => (
+                    <div 
+                      key={alert.id}
+                      className={cn(
+                        "p-4 rounded-2xl border transition-all relative overflow-hidden",
+                        alert.isTriggered 
+                          ? "bg-rose-50 border-rose-100" 
+                          : "bg-white border-gray-100 hover:border-blue-200"
+                      )}
+                    >
                     <div className="flex items-center justify-between mb-2">
                        <span className="text-sm font-bold text-gray-900">{alert.symbol}</span>
                        <button 
@@ -1088,8 +1210,9 @@ export default function App() {
                 ))
               )}
             </div>
+          </div>
 
-            <div className="p-6 bg-gray-50 border-t border-gray-100">
+          <div className="p-6 bg-gray-50 border-t border-gray-100">
                <p className="text-[10px] text-gray-400 font-bold uppercase text-center leading-relaxed">
                  O aplicativo verifica os preços sempre que a página é atualizada ou os dados são recarregados.
                </p>
