@@ -1,0 +1,6 @@
+{
+  "name": "Bolsa Tracker",
+  "description": "Acompanhe ações da B3 com gráficos em tempo real e dados históricos usando a API Brapi.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
