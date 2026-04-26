@@ -40,7 +40,7 @@ import {
   Building
 } from 'lucide-react';
 import { cn } from './lib/utils';
-import { calculateSMA, calculateRSI } from './lib/calculations';
+import { calculateSMA, calculateRSI, calculateMACD, calculateBollingerBands, calculateStochastic } from './lib/calculations';
 
 interface PriceAlert {
   id: string;
@@ -133,7 +133,17 @@ export default function App() {
     showSMA: false,
     smaPeriod: 20,
     showRSI: false,
-    rsiPeriod: 14
+    rsiPeriod: 14,
+    showMACD: false,
+    macdFast: 12,
+    macdSlow: 26,
+    macdSignal: 9,
+    showBollinger: false,
+    bollingerPeriod: 20,
+    bollingerStdDev: 2,
+    showStochastic: false,
+    stochasticK: 14,
+    stochasticD: 3
   });
   const [alerts, setAlerts] = useState<PriceAlert[]>(() => {
     const saved = localStorage.getItem('bolsa-tracker-alerts');
@@ -381,25 +391,44 @@ export default function App() {
     setFiiLoading(true);
     setFiiError(null);
     try {
-      const symbolsStr = FAVORITE_FIIS.join(',');
-      const response = await fetch(
-        `https://brapi.dev/api/quote/${symbolsStr}?range=${selectedRange}&interval=1d&token=${BRAPI_TOKEN}`
-      );
-      const result = await response.json();
-      if (!response.ok || result.error || !result.results) {
-        let msg = result.message || `Erro na API (Status: ${response.status})`;
-        if (response.status === 429 || msg.toLowerCase().includes('quota') || msg.toLowerCase().includes('limit')) {
-          msg = 'Limite atingido. Tente em instantes.';
+      const results: any[] = [];
+      let lastError = null;
+
+      // Fetch each FII individually to avoid batch size limits on free plans
+      for (const symbol of FAVORITE_FIIS) {
+        try {
+          const response = await fetch(
+            `https://brapi.dev/api/quote/${symbol}?range=${selectedRange}&interval=1d&token=${BRAPI_TOKEN}`
+          );
+          const result = await response.json();
+          
+          if (!response.ok || result.error || !result.results) {
+            let msg = result.message || `Erro na API para ${symbol} (Status: ${response.status})`;
+            if (response.status === 429 || msg.toLowerCase().includes('quota') || msg.toLowerCase().includes('limit')) {
+              lastError = 'Limite atingido. Tente em instantes.';
+            } else {
+              lastError = msg;
+            }
+            console.error(`API Error (${symbol}):`, lastError);
+            continue;
+          }
+
+          if (result.results && result.results[0]) {
+            results.push(result.results[0]);
+          }
+        } catch (err) {
+          console.error(`Erro ao buscar ${symbol}:`, err);
+          lastError = `Erro ao buscar ${symbol}`;
         }
-        console.error('API Error (FIIs):', msg);
-        setFiiError(msg);
-        return;
       }
-      if (result.results) {
-        setFiiData(result.results);
+
+      if (results.length > 0) {
+        setFiiData(results);
+      } else if (lastError) {
+        setFiiError(lastError);
       }
     } catch (err) {
-      console.error('Erro ao buscar FIIs:', err);
+      console.error('Erro ao processar FIIs:', err);
       setFiiError('Erro de conexão.');
     } finally {
       setFiiLoading(false);
@@ -538,13 +567,23 @@ export default function App() {
     if (allSymbols.length === 0) return;
 
     try {
-      const symbolsStr = allSymbols.join(',');
-      const response = await fetch(
-        `https://brapi.dev/api/quote/${symbolsStr}?token=${BRAPI_TOKEN}`
-      );
-      const result = await response.json();
-      if (result.results) {
-        checkAlerts(result.results);
+      const results: any[] = [];
+      for (const symbol of allSymbols) {
+        try {
+          const response = await fetch(
+            `https://brapi.dev/api/quote/${symbol}?token=${BRAPI_TOKEN}`
+          );
+          const result = await response.json();
+          if (result.results && result.results[0]) {
+            results.push(result.results[0]);
+          }
+        } catch (err) {
+          console.error(`Erro ao verificar preço para ${symbol}:`, err);
+        }
+      }
+      
+      if (results.length > 0) {
+        checkAlerts(results);
       }
     } catch (err) {
       console.error('Erro ao verificar preços de alertas:', err);
@@ -559,34 +598,45 @@ export default function App() {
     setLoading(true);
     setError(null);
     try {
-      const symbolsStr = symbols.join(',');
-      const response = await fetch(
-        `https://brapi.dev/api/quote/${symbolsStr}?range=${selectedRange}&interval=1d&token=${BRAPI_TOKEN}&fundamental=true`
-      );
-      const result = await response.json();
+      const results: any[] = [];
+      let globalError = null;
 
-      if (!response.ok || result.error || result.message) {
-        let msg = result.message || `Erro na API do Brapi (Status: ${response.status})`;
-        if (response.status === 429 || msg.toLowerCase().includes('quota') || msg.toLowerCase().includes('limit')) {
-          msg = 'Limite de requisições da API atingido. Tente novamente em alguns minutos.';
+      for (const symbol of symbols) {
+        try {
+          const response = await fetch(
+            `https://brapi.dev/api/quote/${symbol}?range=${selectedRange}&interval=1d&token=${BRAPI_TOKEN}&fundamental=true`
+          );
+          const result = await response.json();
+
+          if (!response.ok || result.error) {
+            let msg = result.message || `Erro na API para ${symbol} (Status: ${response.status})`;
+            if (response.status === 429 || msg.toLowerCase().includes('quota') || msg.toLowerCase().includes('limit')) {
+              globalError = 'Limite de requisições da API atingido. Tente novamente em alguns minutos.';
+              break;
+            }
+            console.warn(`Erro ao buscar ${symbol}:`, msg);
+            continue;
+          }
+
+          if (result.results && result.results[0]) {
+            results.push(result.results[0]);
+          }
+        } catch (err) {
+          console.error(`Erro ao buscar ${symbol}:`, err);
         }
-        setError(msg);
-        return;
       }
 
-      if (result.results && result.results.length > 0) {
-        const validResults = result.results.filter((r: any) => r.regularMarketPrice !== undefined);
-        const invalidResults = result.results.filter((r: any) => r.error === true);
+      if (results.length > 0) {
+        const validResults = results.filter((r: any) => r.regularMarketPrice !== undefined);
         
-        if (invalidResults.length > 0) {
-          console.warn('Alguns ativos não foram encontrados:', invalidResults.map((r: any) => r.symbol).join(', '));
-        }
-
         if (validResults.length === 0) {
           setError('Nenhum dos ativos informados foi encontrado.');
+        } else {
+          setStocksData(validResults);
+          checkAlerts(validResults);
         }
-        setStocksData(validResults);
-        checkAlerts(validResults);
+      } else if (globalError) {
+        setError(globalError);
       } else {
         setError('Ocorreu um erro ao processar os dados dos ativos.');
       }
@@ -672,8 +722,14 @@ export default function App() {
     
     stocksData.forEach((stock) => {
       const prices = stock.historicalDataPrice?.map(d => d.close) || [];
+      const highs = stock.historicalDataPrice?.map(d => d.high) || [];
+      const lows = stock.historicalDataPrice?.map(d => d.low) || [];
+      
       const smaValues = indicatorSettings.showSMA ? calculateSMA(prices, indicatorSettings.smaPeriod) : [];
       const rsiValues = indicatorSettings.showRSI ? calculateRSI(prices, indicatorSettings.rsiPeriod) : [];
+      const macdValues = indicatorSettings.showMACD ? calculateMACD(prices, indicatorSettings.macdFast, indicatorSettings.macdSlow, indicatorSettings.macdSignal) : null;
+      const bbValues = indicatorSettings.showBollinger ? calculateBollingerBands(prices, indicatorSettings.bollingerPeriod, indicatorSettings.bollingerStdDev) : null;
+      const stochValues = indicatorSettings.showStochastic ? calculateStochastic(highs, lows, prices, indicatorSettings.stochasticK, indicatorSettings.stochasticD) : null;
 
       stock.historicalDataPrice?.forEach((day, idx) => {
         const dateObj = new Date(day.date * 1000);
@@ -704,6 +760,20 @@ export default function App() {
           }
           if (indicatorSettings.showRSI) {
             dataMap[fullDate][`${stock.symbol}_RSI`] = rsiValues[idx];
+          }
+          if (indicatorSettings.showMACD && macdValues) {
+            dataMap[fullDate][`${stock.symbol}_MACD`] = macdValues.macdLine[idx];
+            dataMap[fullDate][`${stock.symbol}_MACD_Signal`] = macdValues.signalLine[idx];
+            dataMap[fullDate][`${stock.symbol}_MACD_Hist`] = macdValues.histogram[idx];
+          }
+          if (indicatorSettings.showBollinger && bbValues) {
+            dataMap[fullDate][`${stock.symbol}_BB_Upper`] = bbValues.upper[idx];
+            dataMap[fullDate][`${stock.symbol}_BB_Middle`] = bbValues.middle[idx];
+            dataMap[fullDate][`${stock.symbol}_BB_Lower`] = bbValues.lower[idx];
+          }
+          if (indicatorSettings.showStochastic && stochValues) {
+            dataMap[fullDate][`${stock.symbol}_Stoch_K`] = stochValues.percentK[idx];
+            dataMap[fullDate][`${stock.symbol}_Stoch_D`] = stochValues.percentD[idx];
           }
         }
       });
@@ -1071,8 +1141,8 @@ export default function App() {
 
         {/* Technical Settings Panel */}
         {showTechnical && (
-          <div className="mb-8 grid grid-cols-1 md:grid-cols-2 gap-6 p-6 bg-white rounded-2xl border border-gray-200 shadow-sm animate-in fade-in slide-in-from-top-4">
-            <div className="space-y-4">
+          <div className="mb-8 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 p-6 bg-white rounded-2xl border border-gray-200 shadow-sm animate-in fade-in slide-in-from-top-4">
+            <div className="space-y-4 p-4 border border-gray-50 rounded-xl">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
                   <input 
@@ -1082,11 +1152,11 @@ export default function App() {
                     onChange={(e) => setIndicatorSettings(prev => ({ ...prev, showSMA: e.target.checked }))}
                     className="w-4 h-4 rounded text-blue-600 focus:ring-blue-500"
                   />
-                  <label htmlFor="smaToggle" className="text-sm font-bold text-gray-700">Média Móvel Simples (SMA)</label>
+                  <label htmlFor="smaToggle" className="text-sm font-bold text-gray-700">SMA</label>
                 </div>
                 {indicatorSettings.showSMA && (
                   <div className="flex items-center gap-2">
-                    <span className="text-xs text-gray-400">Período:</span>
+                    <span className="text-xs text-gray-400">P.:</span>
                     <input 
                       type="number"
                       value={indicatorSettings.smaPeriod}
@@ -1096,10 +1166,10 @@ export default function App() {
                   </div>
                 )}
               </div>
-              <p className="text-xs text-gray-400 italic">Exibida sobre o gráfico de preço para o ativo principal ({tickers[0]}).</p>
+              <p className="text-[10px] text-gray-400 italic leading-relaxed">Média Móvel Simples. Exibida sobre o gráfico de preço.</p>
             </div>
 
-            <div className="space-y-4">
+            <div className="space-y-4 p-4 border border-gray-50 rounded-xl">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
                   <input 
@@ -1109,11 +1179,11 @@ export default function App() {
                     onChange={(e) => setIndicatorSettings(prev => ({ ...prev, showRSI: e.target.checked }))}
                     className="w-4 h-4 rounded text-blue-600 focus:ring-blue-500"
                   />
-                  <label htmlFor="rsiToggle" className="text-sm font-bold text-gray-700">Índice de Força Relativa (RSI)</label>
+                  <label htmlFor="rsiToggle" className="text-sm font-bold text-gray-700">RSI</label>
                 </div>
                 {indicatorSettings.showRSI && (
                   <div className="flex items-center gap-2">
-                    <span className="text-xs text-gray-400">Período:</span>
+                    <span className="text-xs text-gray-400">P.:</span>
                     <input 
                       type="number"
                       value={indicatorSettings.rsiPeriod}
@@ -1123,7 +1193,75 @@ export default function App() {
                   </div>
                 )}
               </div>
-              <p className="text-xs text-gray-400 italic">Exibido em um gráfico separado monitorando sobrecompra/sobrevenda.</p>
+              <p className="text-[10px] text-gray-400 italic leading-relaxed">Índice de Força Relativa. Exibido em um gráfico separado.</p>
+            </div>
+
+            <div className="space-y-4 p-4 border border-gray-50 rounded-xl">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <input 
+                    type="checkbox" 
+                    id="macdToggle"
+                    checked={indicatorSettings.showMACD}
+                    onChange={(e) => setIndicatorSettings(prev => ({ ...prev, showMACD: e.target.checked }))}
+                    className="w-4 h-4 rounded text-blue-600 focus:ring-blue-500"
+                  />
+                  <label htmlFor="macdToggle" className="text-sm font-bold text-gray-700">MACD</label>
+                </div>
+                {indicatorSettings.showMACD && (
+                  <div className="flex items-center gap-1.5 overflow-x-auto">
+                    <input type="number" value={indicatorSettings.macdFast} onChange={(e) => setIndicatorSettings(prev => ({ ...prev, macdFast: parseInt(e.target.value) || 1 }))} className="w-10 px-1 py-0.5 text-[10px] border border-gray-200 rounded" />
+                    <input type="number" value={indicatorSettings.macdSlow} onChange={(e) => setIndicatorSettings(prev => ({ ...prev, macdSlow: parseInt(e.target.value) || 1 }))} className="w-10 px-1 py-0.5 text-[10px] border border-gray-200 rounded" />
+                    <input type="number" value={indicatorSettings.macdSignal} onChange={(e) => setIndicatorSettings(prev => ({ ...prev, macdSignal: parseInt(e.target.value) || 1 }))} className="w-10 px-1 py-0.5 text-[10px] border border-gray-200 rounded" />
+                  </div>
+                )}
+              </div>
+              <p className="text-[10px] text-gray-400 italic leading-relaxed">Média Móvel Convergente/Divergente. Oscilador 12/26/9.</p>
+            </div>
+
+            <div className="space-y-4 p-4 border border-gray-50 rounded-xl">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <input 
+                    type="checkbox" 
+                    id="bbToggle"
+                    checked={indicatorSettings.showBollinger}
+                    onChange={(e) => setIndicatorSettings(prev => ({ ...prev, showBollinger: e.target.checked }))}
+                    className="w-4 h-4 rounded text-blue-600 focus:ring-blue-500"
+                  />
+                  <label htmlFor="bbToggle" className="text-sm font-bold text-gray-700">Bandas Bollinger</label>
+                </div>
+                {indicatorSettings.showBollinger && (
+                  <div className="flex items-center gap-1.5 text-[10px] font-bold text-gray-500">
+                    <input type="number" value={indicatorSettings.bollingerPeriod} onChange={(e) => setIndicatorSettings(prev => ({ ...prev, bollingerPeriod: parseInt(e.target.value) || 1 }))} className="w-10 px-1 py-0.5 border border-gray-200 rounded" />
+                    <span>σ</span>
+                    <input type="number" value={indicatorSettings.bollingerStdDev} onChange={(e) => setIndicatorSettings(prev => ({ ...prev, bollingerStdDev: parseInt(e.target.value) || 1 }))} className="w-8 px-1 py-0.5 border border-gray-200 rounded" />
+                  </div>
+                )}
+              </div>
+              <p className="text-[10px] text-gray-400 italic leading-relaxed">Bandas de Bollinger. Volatilidade e Médias.</p>
+            </div>
+
+            <div className="space-y-4 p-4 border border-gray-50 rounded-xl">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <input 
+                    type="checkbox" 
+                    id="stochToggle"
+                    checked={indicatorSettings.showStochastic}
+                    onChange={(e) => setIndicatorSettings(prev => ({ ...prev, showStochastic: e.target.checked }))}
+                    className="w-4 h-4 rounded text-blue-600 focus:ring-blue-500"
+                  />
+                  <label htmlFor="stochToggle" className="text-sm font-bold text-gray-700">Estocástico</label>
+                </div>
+                {indicatorSettings.showStochastic && (
+                  <div className="flex items-center gap-1.5">
+                    <input type="number" value={indicatorSettings.stochasticK} onChange={(e) => setIndicatorSettings(prev => ({ ...prev, stochasticK: parseInt(e.target.value) || 1 }))} className="w-10 px-1 py-0.5 text-[10px] border border-gray-200 rounded" />
+                    <input type="number" value={indicatorSettings.stochasticD} onChange={(e) => setIndicatorSettings(prev => ({ ...prev, stochasticD: parseInt(e.target.value) || 1 }))} className="w-10 px-1 py-0.5 text-[10px] border border-gray-200 rounded" />
+                  </div>
+                )}
+              </div>
+              <p className="text-[10px] text-gray-400 italic leading-relaxed">Oscilador Estocástico. Mostra posição relativa (K/D).</p>
             </div>
           </div>
         )}
@@ -1253,6 +1391,13 @@ export default function App() {
                           name={`SMA ${indicatorSettings.smaPeriod} (${tickers[0]})`}
                           animationDuration={1500}
                         />
+                      )}
+                      {indicatorSettings.showBollinger && stocksData.length > 0 && (
+                        <>
+                          <Line type="monotone" dataKey={`${tickers[0]}_BB_Upper`} stroke="#f59e0b" strokeWidth={1} strokeDasharray="3 3" dot={false} name="BB Superior" />
+                          <Line type="monotone" dataKey={`${tickers[0]}_BB_Middle`} stroke="#f59e0b" strokeWidth={1} dot={false} name="BB Média" />
+                          <Line type="monotone" dataKey={`${tickers[0]}_BB_Lower`} stroke="#f59e0b" strokeWidth={1} strokeDasharray="3 3" dot={false} name="BB Inferior" />
+                        </>
                       )}
                       <Brush 
                         dataKey="date" 
@@ -1395,6 +1540,13 @@ export default function App() {
                           name={`SMA ${indicatorSettings.smaPeriod} (${tickers[0]})`}
                         />
                       )}
+                      {indicatorSettings.showBollinger && stocksData.length > 0 && (
+                        <>
+                          <Line type="monotone" dataKey={`${tickers[0]}_BB_Upper`} stroke="#f59e0b" strokeWidth={1} strokeDasharray="3 3" dot={false} name="BB Superior" opacity={0.5} />
+                          <Line type="monotone" dataKey={`${tickers[0]}_BB_Middle`} stroke="#f59e0b" strokeWidth={1} dot={false} name="BB Média" opacity={0.5} />
+                          <Line type="monotone" dataKey={`${tickers[0]}_BB_Lower`} stroke="#f59e0b" strokeWidth={1} strokeDasharray="3 3" dot={false} name="BB Inferior" opacity={0.5} />
+                        </>
+                      )}
                       
                       <Brush 
                         dataKey="date" 
@@ -1408,49 +1560,164 @@ export default function App() {
                 </ResponsiveContainer>
               </div>
 
-              {/* RSI Chart Section */}
-              {indicatorSettings.showRSI && stocksData.length > 0 && (
-                <div className="mt-8 pt-8 border-t border-gray-100">
-                  <h3 className="text-sm font-bold text-gray-400 uppercase tracking-widest mb-4">Oscilador RSI ({tickers[0]})</h3>
-                  <div className="h-[200px] w-full">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <LineChart data={chartData}>
-                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#F0F0F0" />
-                        <XAxis 
-                          dataKey="date" 
-                          axisLine={false}
-                          tickLine={false}
-                          tick={{ fontSize: 10, fill: '#9CA3AF' }}
-                          dy={10}
-                          minTickGap={30}
-                        />
-                        <YAxis 
-                          axisLine={false}
-                          tickLine={false}
-                          tick={{ fontSize: 10, fill: '#9CA3AF' }}
-                          domain={[0, 100]}
-                          ticks={[0, 30, 70, 100]}
-                        />
-                        <Tooltip 
-                          contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
-                          formatter={(value: number) => [value.toFixed(2), 'RSI']}
-                        />
-                        <ReferenceLine y={70} stroke="#f43f5e" strokeDasharray="3 3" label={{ value: 'Sobrecompra', position: 'insideRight', fill: '#f43f5e', fontSize: 10 }} />
-                        <ReferenceLine y={30} stroke="#10b981" strokeDasharray="3 3" label={{ value: 'Sobrevenda', position: 'insideRight', fill: '#10b981', fontSize: 10 }} />
-                        <Line 
-                          type="monotone" 
-                          dataKey={`${tickers[0]}_RSI`} 
-                          stroke="#6366f1" 
-                          strokeWidth={2}
-                          dot={false}
-                          name="RSI"
-                          animationDuration={1500}
-                        />
-                      </LineChart>
-                    </ResponsiveContainer>
+              {/* Technical Indicators Sub-Charts */}
+              <div className="space-y-12">
+                {/* RSI Chart Section */}
+                {indicatorSettings.showRSI && stocksData.length > 0 && (
+                  <div className="mt-8 pt-8 border-t border-gray-100">
+                    <h3 className="text-sm font-bold text-gray-400 uppercase tracking-widest mb-4">Oscilador RSI ({tickers[0]})</h3>
+                    <div className="h-[200px] w-full">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <LineChart data={chartData}>
+                          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#F0F0F0" />
+                          <XAxis 
+                            dataKey="date" 
+                            axisLine={false}
+                            tickLine={false}
+                            tick={{ fontSize: 10, fill: '#9CA3AF' }}
+                            dy={10}
+                            minTickGap={30}
+                          />
+                          <YAxis 
+                            axisLine={false}
+                            tickLine={false}
+                            tick={{ fontSize: 10, fill: '#9CA3AF' }}
+                            domain={[0, 100]}
+                            ticks={[0, 30, 70, 100]}
+                          />
+                          <Tooltip 
+                            contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
+                            formatter={(value: number) => [value.toFixed(2), 'RSI']}
+                          />
+                          <ReferenceLine y={70} stroke="#f43f5e" strokeDasharray="3 3" label={{ value: 'Sobrecompra', position: 'insideRight', fill: '#f43f5e', fontSize: 10 }} />
+                          <ReferenceLine y={30} stroke="#10b981" strokeDasharray="3 3" label={{ value: 'Sobrevenda', position: 'insideRight', fill: '#10b981', fontSize: 10 }} />
+                          <Line 
+                            type="monotone" 
+                            dataKey={`${tickers[0]}_RSI`} 
+                            stroke="#6366f1" 
+                            strokeWidth={2}
+                            dot={false}
+                            name="RSI"
+                            animationDuration={1500}
+                          />
+                        </LineChart>
+                      </ResponsiveContainer>
+                    </div>
                   </div>
-                </div>
-              )}
+                )}
+
+                {/* MACD Chart Section */}
+                {indicatorSettings.showMACD && stocksData.length > 0 && (
+                  <div className="mt-8 pt-8 border-t border-gray-100">
+                    <h3 className="text-sm font-bold text-gray-400 uppercase tracking-widest mb-4">Oscilador MACD ({tickers[0]})</h3>
+                    <div className="h-[200px] w-full">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <ComposedChart data={chartData}>
+                          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#F0F0F0" />
+                          <XAxis 
+                            dataKey="date" 
+                            axisLine={false}
+                            tickLine={false}
+                            tick={{ fontSize: 10, fill: '#9CA3AF' }}
+                            dy={10}
+                            minTickGap={30}
+                          />
+                          <YAxis 
+                            axisLine={false}
+                            tickLine={false}
+                            tick={{ fontSize: 10, fill: '#9CA3AF' }}
+                            domain={['auto', 'auto']}
+                          />
+                          <Tooltip 
+                            contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
+                            formatter={(value: number) => [value.toFixed(4), '']}
+                          />
+                          <Bar 
+                            dataKey={`${tickers[0]}_MACD_Hist`} 
+                            fill="#94a3b8" 
+                            opacity={0.3}
+                            name="Histograma"
+                          >
+                            {chartData.map((entry, index) => {
+                              const val = entry[`${tickers[0]}_MACD_Hist`];
+                              const color = val >= 0 ? '#10b981' : '#f43f5e';
+                              return <Cell key={`hist-${index}`} fill={color} opacity={0.3} />;
+                            })}
+                          </Bar>
+                          <Line 
+                            type="monotone" 
+                            dataKey={`${tickers[0]}_MACD`} 
+                            stroke="#2563eb" 
+                            strokeWidth={1.5}
+                            dot={false}
+                            name="MACD"
+                          />
+                          <Line 
+                            type="monotone" 
+                            dataKey={`${tickers[0]}_MACD_Signal`} 
+                            stroke="#f59e0b" 
+                            strokeWidth={1.5}
+                            dot={false}
+                            name="Sinal"
+                          />
+                        </ComposedChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </div>
+                )}
+
+                {/* Stochastic Chart Section */}
+                {indicatorSettings.showStochastic && stocksData.length > 0 && (
+                  <div className="mt-8 pt-8 border-t border-gray-100">
+                    <h3 className="text-sm font-bold text-gray-400 uppercase tracking-widest mb-4">Oscilador Estocástico ({tickers[0]})</h3>
+                    <div className="h-[200px] w-full">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <LineChart data={chartData}>
+                          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#F0F0F0" />
+                          <XAxis 
+                            dataKey="date" 
+                            axisLine={false}
+                            tickLine={false}
+                            tick={{ fontSize: 10, fill: '#9CA3AF' }}
+                            dy={10}
+                            minTickGap={30}
+                          />
+                          <YAxis 
+                            axisLine={false}
+                            tickLine={false}
+                            tick={{ fontSize: 10, fill: '#9CA3AF' }}
+                            domain={[0, 100]}
+                            ticks={[0, 20, 80, 100]}
+                          />
+                          <Tooltip 
+                            contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
+                            formatter={(value: number) => [value.toFixed(2), '%']}
+                          />
+                          <ReferenceLine y={80} stroke="#f43f5e" strokeDasharray="3 3" />
+                          <ReferenceLine y={20} stroke="#10b981" strokeDasharray="3 3" />
+                          <Line 
+                            type="monotone" 
+                            dataKey={`${tickers[0]}_Stoch_K`} 
+                            stroke="#10b981" 
+                            strokeWidth={1.5}
+                            dot={false}
+                            name="%K"
+                          />
+                          <Line 
+                            type="monotone" 
+                            dataKey={`${tickers[0]}_Stoch_D`} 
+                            stroke="#f43f5e" 
+                            strokeWidth={1.5}
+                            strokeDasharray="3 3"
+                            dot={false}
+                            name="%D"
+                          />
+                        </LineChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
 
             {/* Detailed Cards Grid */}
