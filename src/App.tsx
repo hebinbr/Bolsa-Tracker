@@ -155,6 +155,7 @@ export default function App() {
     symbol: string; 
     targetPrice: string; 
     condition: 'above' | 'below';
+    useVolume: boolean;
     targetVolume: string;
     volumeCondition: 'above' | 'below';
     frequency: '1m' | '5m' | '15m' | '30m' | '1h';
@@ -166,6 +167,7 @@ export default function App() {
   const [fiiData, setFiiData] = useState<StockData[]>([]);
   const [fiiLoading, setFiiLoading] = useState(false);
   const [fiiError, setFiiError] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<'price' | 'indicators'>('price');
   const [news, setNews] = useState<NewsItem[]>([]);
   const [newsLoading, setNewsLoading] = useState(false);
   const [newsError, setNewsError] = useState<string | null>(null);
@@ -173,6 +175,18 @@ export default function App() {
   const [selectedStock, setSelectedStock] = useState<StockData | null>(null);
   const [stockNews, setStockNews] = useState<NewsItem[]>([]);
   const [stockNewsLoading, setStockNewsLoading] = useState(false);
+  const [onlineUsers, setOnlineUsers] = useState(Math.floor(Math.random() * (250 - 150 + 1)) + 150);
+
+  // Online Users Simulation
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setOnlineUsers(prev => {
+        const change = Math.floor(Math.random() * 5) - 2; // -2 to +2
+        return Math.max(120, Math.min(450, prev + change));
+      });
+    }, 10000);
+    return () => clearInterval(interval);
+  }, []);
 
   // Perist tickers and alerts
   useEffect(() => {
@@ -1314,9 +1328,31 @@ export default function App() {
                     </button>
                   </div>
                 </div>
-                
-                {/* Range Selector */}
-                <div className="flex items-center gap-1 bg-gray-50 p-1 rounded-xl w-fit">
+
+                <div className="flex items-center gap-6">
+                  <div className="flex items-center gap-1 bg-gray-100 p-1 rounded-xl">
+                    <button
+                      onClick={() => setActiveTab('price')}
+                      className={cn(
+                        "px-3 py-1.5 text-[10px] font-black uppercase rounded-lg transition-all",
+                        activeTab === 'price' ? "bg-white text-blue-600 shadow-sm" : "text-gray-400 hover:text-gray-600"
+                      )}
+                    >
+                      Preço
+                    </button>
+                    <button
+                      onClick={() => setActiveTab('indicators')}
+                      className={cn(
+                        "px-3 py-1.5 text-[10px] font-black uppercase rounded-lg transition-all",
+                        activeTab === 'indicators' ? "bg-white text-blue-600 shadow-sm" : "text-gray-400 hover:text-gray-600"
+                      )}
+                    >
+                      Indicadores
+                    </button>
+                  </div>
+                  
+                  {/* Range Selector */}
+                  <div className="flex items-center gap-1 bg-gray-50 p-1 rounded-xl w-fit">
                   {RANGES.map((r) => (
                     <button
                       key={r.value}
@@ -1333,12 +1369,14 @@ export default function App() {
                   ))}
                 </div>
               </div>
+            </div>
 
-              {/* Chart */}
-              <div className="h-[450px] w-full">
-                <ResponsiveContainer width="100%" height="100%">
+            {/* Chart */}
+              {activeTab === 'price' ? (
+                <div className="h-[450px] w-full animate-in fade-in zoom-in-95 duration-300">
+                  <ResponsiveContainer width="100%" height="100%">
                   {chartType === 'line' ? (
-                    <LineChart data={chartData}>
+                    <LineChart data={chartData} syncId="main-stock-sync">
                       <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#F0F0F0" />
                       <XAxis 
                         dataKey="date" 
@@ -1392,13 +1430,6 @@ export default function App() {
                           animationDuration={1500}
                         />
                       )}
-                      {indicatorSettings.showBollinger && stocksData.length > 0 && (
-                        <>
-                          <Line type="monotone" dataKey={`${tickers[0]}_BB_Upper`} stroke="#f59e0b" strokeWidth={1} strokeDasharray="3 3" dot={false} name="BB Superior" />
-                          <Line type="monotone" dataKey={`${tickers[0]}_BB_Middle`} stroke="#f59e0b" strokeWidth={1} dot={false} name="BB Média" />
-                          <Line type="monotone" dataKey={`${tickers[0]}_BB_Lower`} stroke="#f59e0b" strokeWidth={1} strokeDasharray="3 3" dot={false} name="BB Inferior" />
-                        </>
-                      )}
                       <Brush 
                         dataKey="date" 
                         height={30} 
@@ -1408,7 +1439,7 @@ export default function App() {
                       />
                     </LineChart>
                   ) : (
-                    <ComposedChart data={chartData}>
+                    <ComposedChart data={chartData} syncId="main-stock-sync">
                       <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#F0F0F0" />
                       <XAxis 
                         dataKey="date" 
@@ -1540,13 +1571,6 @@ export default function App() {
                           name={`SMA ${indicatorSettings.smaPeriod} (${tickers[0]})`}
                         />
                       )}
-                      {indicatorSettings.showBollinger && stocksData.length > 0 && (
-                        <>
-                          <Line type="monotone" dataKey={`${tickers[0]}_BB_Upper`} stroke="#f59e0b" strokeWidth={1} strokeDasharray="3 3" dot={false} name="BB Superior" opacity={0.5} />
-                          <Line type="monotone" dataKey={`${tickers[0]}_BB_Middle`} stroke="#f59e0b" strokeWidth={1} dot={false} name="BB Média" opacity={0.5} />
-                          <Line type="monotone" dataKey={`${tickers[0]}_BB_Lower`} stroke="#f59e0b" strokeWidth={1} strokeDasharray="3 3" dot={false} name="BB Inferior" opacity={0.5} />
-                        </>
-                      )}
                       
                       <Brush 
                         dataKey="date" 
@@ -1559,166 +1583,99 @@ export default function App() {
                   )}
                 </ResponsiveContainer>
               </div>
-
-              {/* Technical Indicators Sub-Charts */}
-              <div className="space-y-12">
-                {/* RSI Chart Section */}
-                {indicatorSettings.showRSI && stocksData.length > 0 && (
-                  <div className="mt-8 pt-8 border-t border-gray-100">
-                    <h3 className="text-sm font-bold text-gray-400 uppercase tracking-widest mb-4">Oscilador RSI ({tickers[0]})</h3>
-                    <div className="h-[200px] w-full">
+            ) : (
+              <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+                {indicatorSettings.showBollinger && stocksData.length > 0 && (
+                  <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
+                    <h3 className="text-sm font-bold text-gray-400 uppercase tracking-widest mb-4">Bandas de Bollinger ({tickers[0]})</h3>
+                    <div className="h-[300px] w-full">
                       <ResponsiveContainer width="100%" height="100%">
-                        <LineChart data={chartData}>
+                        <LineChart data={chartData} syncId="main-stock-sync">
                           <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#F0F0F0" />
-                          <XAxis 
-                            dataKey="date" 
-                            axisLine={false}
-                            tickLine={false}
-                            tick={{ fontSize: 10, fill: '#9CA3AF' }}
-                            dy={10}
-                            minTickGap={30}
-                          />
-                          <YAxis 
-                            axisLine={false}
-                            tickLine={false}
-                            tick={{ fontSize: 10, fill: '#9CA3AF' }}
-                            domain={[0, 100]}
-                            ticks={[0, 30, 70, 100]}
-                          />
-                          <Tooltip 
-                            contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
-                            formatter={(value: number) => [value.toFixed(2), 'RSI']}
-                          />
-                          <ReferenceLine y={70} stroke="#f43f5e" strokeDasharray="3 3" label={{ value: 'Sobrecompra', position: 'insideRight', fill: '#f43f5e', fontSize: 10 }} />
-                          <ReferenceLine y={30} stroke="#10b981" strokeDasharray="3 3" label={{ value: 'Sobrevenda', position: 'insideRight', fill: '#10b981', fontSize: 10 }} />
-                          <Line 
-                            type="monotone" 
-                            dataKey={`${tickers[0]}_RSI`} 
-                            stroke="#6366f1" 
-                            strokeWidth={2}
-                            dot={false}
-                            name="RSI"
-                            animationDuration={1500}
-                          />
+                          <XAxis dataKey="date" tickLine={false} axisLine={false} tick={{ fontSize: 10, fill: '#9CA3AF' }} />
+                          <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#9CA3AF' }} domain={['auto', 'auto']} tickFormatter={(v) => `R$ ${v}`} />
+                          <Tooltip contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }} />
+                          <Line type="monotone" dataKey={tickers[0]} stroke={COLORS[0]} strokeWidth={2} dot={false} name={tickers[0]} />
+                          <Line type="monotone" dataKey={`${tickers[0]}_BB_Upper`} stroke="#f59e0b" strokeWidth={1} strokeDasharray="3 3" dot={false} name="BB Superior" />
+                          <Line type="monotone" dataKey={`${tickers[0]}_BB_Middle`} stroke="#f59e0b" strokeWidth={1} dot={false} name="BB Média" />
+                          <Line type="monotone" dataKey={`${tickers[0]}_BB_Lower`} stroke="#f59e0b" strokeWidth={1} strokeDasharray="3 3" dot={false} name="BB Inferior" />
                         </LineChart>
                       </ResponsiveContainer>
                     </div>
                   </div>
                 )}
 
-                {/* MACD Chart Section */}
-                {indicatorSettings.showMACD && stocksData.length > 0 && (
-                  <div className="mt-8 pt-8 border-t border-gray-100">
-                    <h3 className="text-sm font-bold text-gray-400 uppercase tracking-widest mb-4">Oscilador MACD ({tickers[0]})</h3>
+                {indicatorSettings.showRSI && stocksData.length > 0 && (
+                  <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
+                    <h3 className="text-sm font-bold text-gray-400 uppercase tracking-widest mb-4">Oscilador RSI ({tickers[0]})</h3>
                     <div className="h-[200px] w-full">
                       <ResponsiveContainer width="100%" height="100%">
-                        <ComposedChart data={chartData}>
+                        <LineChart data={chartData} syncId="main-stock-sync">
                           <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#F0F0F0" />
-                          <XAxis 
-                            dataKey="date" 
-                            axisLine={false}
-                            tickLine={false}
-                            tick={{ fontSize: 10, fill: '#9CA3AF' }}
-                            dy={10}
-                            minTickGap={30}
-                          />
-                          <YAxis 
-                            axisLine={false}
-                            tickLine={false}
-                            tick={{ fontSize: 10, fill: '#9CA3AF' }}
-                            domain={['auto', 'auto']}
-                          />
-                          <Tooltip 
-                            contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
-                            formatter={(value: number) => [value.toFixed(4), '']}
-                          />
-                          <Bar 
-                            dataKey={`${tickers[0]}_MACD_Hist`} 
-                            fill="#94a3b8" 
-                            opacity={0.3}
-                            name="Histograma"
-                          >
-                            {chartData.map((entry, index) => {
-                              const val = entry[`${tickers[0]}_MACD_Hist`];
-                              const color = val >= 0 ? '#10b981' : '#f43f5e';
-                              return <Cell key={`hist-${index}`} fill={color} opacity={0.3} />;
-                            })}
+                          <XAxis dataKey="date" tickLine={false} axisLine={false} tick={{ fontSize: 10, fill: '#9CA3AF' }} />
+                          <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#9CA3AF' }} domain={[0, 100]} ticks={[0, 30, 70, 100]} />
+                          <Tooltip contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }} />
+                          <ReferenceLine y={70} stroke="#f43f5e" strokeDasharray="3 3" label={{ value: '70', position: 'insideRight', fill: '#f43f5e', fontSize: 10 }} />
+                          <ReferenceLine y={30} stroke="#10b981" strokeDasharray="3 3" label={{ value: '30', position: 'insideRight', fill: '#10b981', fontSize: 10 }} />
+                          <Line type="monotone" dataKey={`${tickers[0]}_RSI`} stroke="#6366f1" strokeWidth={2} dot={false} name="RSI" />
+                        </LineChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </div>
+                )}
+
+                {indicatorSettings.showMACD && stocksData.length > 0 && (
+                  <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
+                    <h3 className="text-sm font-bold text-gray-400 uppercase tracking-widest mb-4">MACD ({tickers[0]})</h3>
+                    <div className="h-[250px] w-full">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <ComposedChart data={chartData} syncId="main-stock-sync">
+                          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#F0F0F0" />
+                          <XAxis dataKey="date" tickLine={false} axisLine={false} tick={{ fontSize: 10, fill: '#9CA3AF' }} />
+                          <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#9CA3AF' }} domain={['auto', 'auto']} />
+                          <Tooltip contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }} />
+                          <Bar dataKey={`${tickers[0]}_MACD_Hist`} name="Histograma">
+                            {chartData.map((entry, index) => <Cell key={index} fill={entry[`${tickers[0]}_MACD_Hist`] >= 0 ? '#10b981' : '#f43f5e'} opacity={0.3} />)}
                           </Bar>
-                          <Line 
-                            type="monotone" 
-                            dataKey={`${tickers[0]}_MACD`} 
-                            stroke="#2563eb" 
-                            strokeWidth={1.5}
-                            dot={false}
-                            name="MACD"
-                          />
-                          <Line 
-                            type="monotone" 
-                            dataKey={`${tickers[0]}_MACD_Signal`} 
-                            stroke="#f59e0b" 
-                            strokeWidth={1.5}
-                            dot={false}
-                            name="Sinal"
-                          />
+                          <Line type="monotone" dataKey={`${tickers[0]}_MACD`} stroke="#2563eb" strokeWidth={1.5} dot={false} name="MACD" />
+                          <Line type="monotone" dataKey={`${tickers[0]}_MACD_Signal`} stroke="#f59e0b" strokeWidth={1.5} dot={false} name="Sinal" />
                         </ComposedChart>
                       </ResponsiveContainer>
                     </div>
                   </div>
                 )}
 
-                {/* Stochastic Chart Section */}
                 {indicatorSettings.showStochastic && stocksData.length > 0 && (
-                  <div className="mt-8 pt-8 border-t border-gray-100">
-                    <h3 className="text-sm font-bold text-gray-400 uppercase tracking-widest mb-4">Oscilador Estocástico ({tickers[0]})</h3>
+                  <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
+                    <h3 className="text-sm font-bold text-gray-400 uppercase tracking-widest mb-4">Estocástico ({tickers[0]})</h3>
                     <div className="h-[200px] w-full">
                       <ResponsiveContainer width="100%" height="100%">
-                        <LineChart data={chartData}>
+                        <LineChart data={chartData} syncId="main-stock-sync">
                           <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#F0F0F0" />
-                          <XAxis 
-                            dataKey="date" 
-                            axisLine={false}
-                            tickLine={false}
-                            tick={{ fontSize: 10, fill: '#9CA3AF' }}
-                            dy={10}
-                            minTickGap={30}
-                          />
-                          <YAxis 
-                            axisLine={false}
-                            tickLine={false}
-                            tick={{ fontSize: 10, fill: '#9CA3AF' }}
-                            domain={[0, 100]}
-                            ticks={[0, 20, 80, 100]}
-                          />
-                          <Tooltip 
-                            contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
-                            formatter={(value: number) => [value.toFixed(2), '%']}
-                          />
+                          <XAxis dataKey="date" tickLine={false} axisLine={false} tick={{ fontSize: 10, fill: '#9CA3AF' }} />
+                          <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#9CA3AF' }} domain={[0, 100]} />
+                          <Tooltip contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }} />
                           <ReferenceLine y={80} stroke="#f43f5e" strokeDasharray="3 3" />
                           <ReferenceLine y={20} stroke="#10b981" strokeDasharray="3 3" />
-                          <Line 
-                            type="monotone" 
-                            dataKey={`${tickers[0]}_Stoch_K`} 
-                            stroke="#10b981" 
-                            strokeWidth={1.5}
-                            dot={false}
-                            name="%K"
-                          />
-                          <Line 
-                            type="monotone" 
-                            dataKey={`${tickers[0]}_Stoch_D`} 
-                            stroke="#f43f5e" 
-                            strokeWidth={1.5}
-                            strokeDasharray="3 3"
-                            dot={false}
-                            name="%D"
-                          />
+                          <Line type="monotone" dataKey={`${tickers[0]}_Stoch_K`} stroke="#10b981" strokeWidth={1.5} dot={false} name="%K" />
+                          <Line type="monotone" dataKey={`${tickers[0]}_Stoch_D`} stroke="#f43f5e" strokeWidth={1.5} strokeDasharray="3 3" dot={false} name="%D" />
+                          <Brush dataKey="date" height={30} stroke="#2563eb" fill="#f8fafc" />
                         </LineChart>
                       </ResponsiveContainer>
                     </div>
                   </div>
                 )}
+
+                {!indicatorSettings.showBollinger && !indicatorSettings.showRSI && !indicatorSettings.showMACD && !indicatorSettings.showStochastic && (
+                  <div className="bg-white rounded-2xl p-12 text-center shadow-sm border border-gray-100">
+                    <Activity className="w-12 h-12 text-gray-200 mx-auto mb-4" />
+                    <p className="text-gray-500 font-bold">Nenhum indicador técnico ativado.</p>
+                    <p className="text-sm text-gray-400">Ative-os no painel de configurações para visualizar a análise técnica.</p>
+                  </div>
+                )}
               </div>
-            </div>
+            )}
+          </div>
 
             {/* Detailed Cards Grid */}
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -1762,6 +1719,7 @@ export default function App() {
                             symbol: stock.symbol, 
                             targetPrice: stock.regularMarketPrice.toString(), 
                             condition: 'above',
+                            useVolume: false,
                             targetVolume: '',
                             volumeCondition: 'above',
                             frequency: '1m'
@@ -1820,34 +1778,50 @@ export default function App() {
                           </div>
 
                           <div className="space-y-1.5">
-                            <label className="text-[10px] font-black uppercase text-blue-800 tracking-wider">Condição de Volume (Opcional)</label>
-                            <div className="flex gap-2">
+                            <div className="flex items-center justify-between">
+                              <label className="text-[10px] font-black uppercase text-blue-800 tracking-wider">Volume (Opcional)</label>
                               <button 
-                                onClick={() => setAlertForm(prev => prev ? { ...prev, volumeCondition: 'above' } : null)}
+                                onClick={() => setAlertForm(prev => prev ? { ...prev, useVolume: !prev.useVolume } : null)}
                                 className={cn(
-                                  "flex-1 py-1 text-[10px] font-bold rounded-md border transition-all",
-                                  alertForm.volumeCondition === 'above' ? "bg-blue-600 text-white border-blue-600" : "bg-white text-blue-600 border-blue-200"
+                                  "text-[10px] font-bold px-2 py-0.5 rounded transition-all",
+                                  alertForm.useVolume ? "bg-blue-600 text-white" : "bg-gray-200 text-gray-500"
                                 )}
                               >
-                                {'>'} Volume
-                              </button>
-                              <button 
-                                onClick={() => setAlertForm(prev => prev ? { ...prev, volumeCondition: 'below' } : null)}
-                                className={cn(
-                                  "flex-1 py-1 text-[10px] font-bold rounded-md border transition-all",
-                                  alertForm.volumeCondition === 'below' ? "bg-rose-600 text-white border-rose-600" : "bg-white text-rose-600 border-rose-200"
-                                )}
-                              >
-                                {'<'} Volume
+                                {alertForm.useVolume ? 'Ativado' : 'Desativado'}
                               </button>
                             </div>
-                            <input 
-                              type="number"
-                              value={alertForm.targetVolume}
-                              onChange={(e) => setAlertForm(prev => prev ? { ...prev, targetVolume: e.target.value } : null)}
-                              className="w-full px-3 py-1.5 text-xs rounded-lg border border-blue-200 outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-400 transition-all font-bold"
-                              placeholder="Volume alvo..."
-                            />
+                            
+                            {alertForm.useVolume && (
+                              <div className="space-y-2 pt-1 animate-in slide-in-from-top-2 duration-200">
+                                <div className="flex gap-2">
+                                  <button 
+                                    onClick={() => setAlertForm(prev => prev ? { ...prev, volumeCondition: 'above' } : null)}
+                                    className={cn(
+                                      "flex-1 py-1 text-[10px] font-bold rounded-md border transition-all",
+                                      alertForm.volumeCondition === 'above' ? "bg-blue-600 text-white border-blue-600" : "bg-white text-blue-600 border-blue-200"
+                                    )}
+                                  >
+                                    {'>'} Volume
+                                  </button>
+                                  <button 
+                                    onClick={() => setAlertForm(prev => prev ? { ...prev, volumeCondition: 'below' } : null)}
+                                    className={cn(
+                                      "flex-1 py-1 text-[10px] font-bold rounded-md border transition-all",
+                                      alertForm.volumeCondition === 'below' ? "bg-rose-600 text-white border-rose-600" : "bg-white text-rose-600 border-rose-200"
+                                    )}
+                                  >
+                                    {'<'} Volume
+                                  </button>
+                                </div>
+                                <input 
+                                  type="number"
+                                  value={alertForm.targetVolume}
+                                  onChange={(e) => setAlertForm(prev => prev ? { ...prev, targetVolume: e.target.value } : null)}
+                                  className="w-full px-3 py-1.5 text-xs rounded-lg border border-blue-200 outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-400 transition-all font-bold"
+                                  placeholder="Volume alvo..."
+                                />
+                              </div>
+                            )}
                           </div>
 
                           <div className="space-y-1.5">
@@ -1866,13 +1840,13 @@ export default function App() {
                           </div>
 
                           <button 
-                            disabled={!alertForm.targetPrice || isNaN(parseFloat(alertForm.targetPrice))}
+                            disabled={!alertForm.targetPrice || isNaN(parseFloat(alertForm.targetPrice)) || (alertForm.useVolume && !alertForm.targetVolume)}
                             onClick={() => addAlert(
                               stock.symbol, 
                               parseFloat(alertForm.targetPrice), 
                               alertForm.condition,
-                              alertForm.targetVolume ? parseFloat(alertForm.targetVolume) : undefined,
-                              alertForm.volumeCondition,
+                              alertForm.useVolume && alertForm.targetVolume ? parseFloat(alertForm.targetVolume) : undefined,
+                              alertForm.useVolume ? alertForm.volumeCondition : undefined,
                               alertForm.frequency
                             )}
                             className="w-full py-2 bg-blue-600 text-white rounded-xl text-sm font-bold shadow-md hover:bg-blue-700 disabled:opacity-50 transition-all flex items-center justify-center gap-2"
@@ -2062,35 +2036,37 @@ export default function App() {
             </section>
           </div>
         ) : (
-          !loading && tickers.length > 0 && (
-            <div className="flex flex-col items-center justify-center py-20 text-center">
-              <div className="bg-gray-200 p-6 rounded-full mb-4 animate-pulse">
-                <Activity className="w-12 h-12 text-gray-400" />
-              </div>
-              <h2 className="text-2xl font-bold text-gray-800">Carregando ações...</h2>
-              <p className="text-gray-500 max-w-xs mt-2">
-                Estamos buscando as informações de {tickers.join(', ')} na B3.
-              </p>
-            </div>
-          )
+          <div className="flex flex-col items-center justify-center py-20 text-center">
+            {!loading && tickers.length > 0 && (
+              <>
+                <div className="bg-gray-200 p-6 rounded-full mb-4 animate-pulse">
+                  <Activity className="w-12 h-12 text-gray-400" />
+                </div>
+                <h2 className="text-2xl font-bold text-gray-800">Carregando ações...</h2>
+                <p className="text-gray-500 max-w-xs mt-2">
+                  Estamos buscando as informações de {tickers.join(', ')} na B3.
+                </p>
+              </>
+            )}
+          </div>
         )}
         
         {!loading && tickers.length === 0 && (
-            <div className="flex flex-col items-center justify-center py-20 text-center bg-white rounded-3xl border border-gray-100 shadow-sm">
-                <div className="bg-gray-100 p-6 rounded-full mb-4">
-                  <Search className="w-12 h-12 text-gray-400" />
-                </div>
-                <h2 className="text-2xl font-bold text-gray-800">Sua lista está vazia</h2>
-                <p className="text-gray-500 max-w-xs mt-2">
-                  Adicione até 3 códigos de ações no campo de busca para começar a comparação.
-                </p>
+          <div className="flex flex-col items-center justify-center py-20 text-center bg-white rounded-3xl border border-gray-100 shadow-sm">
+            <div className="bg-gray-100 p-6 rounded-full mb-4">
+              <Search className="w-12 h-12 text-gray-400" />
             </div>
+            <h2 className="text-2xl font-bold text-gray-800">Sua lista está vazia</h2>
+            <p className="text-gray-500 max-w-xs mt-2">
+              Adicione até 3 códigos de ações no campo de busca para começar a comparação.
+            </p>
+          </div>
         )}
 
         {loading && (
           <div className="flex items-center justify-center py-20">
             <div className="flex flex-col items-center gap-4">
-              <div className="w-12 h-12 border-4 border-blue-500/20 border-t-blue-600 rounded-full animate-spin" />
+              <div className="w-12 h-12 border-4 border-blue-500/20 border-t-blue-600 rounded-full animate-spin"></div>
               <p className="text-sm font-bold text-gray-500 animate-pulse uppercase tracking-widest">Sincronizando Mercado...</p>
             </div>
           </div>
@@ -2134,6 +2110,7 @@ export default function App() {
                           symbol: sidebarSymbolInput, 
                           targetPrice: '', 
                           condition: 'above',
+                          useVolume: false,
                           targetVolume: '',
                           volumeCondition: 'above',
                           frequency: '1m'
@@ -2187,30 +2164,46 @@ export default function App() {
                         </div>
 
                         <div className="space-y-1.5">
-                          <label className="text-[10px] font-black uppercase text-blue-800 tracking-wider">Volume (Opcional)</label>
-                          <div className="flex gap-2">
+                          <div className="flex items-center justify-between">
+                            <label className="text-[10px] font-black uppercase text-blue-800 tracking-wider">Volume (Opcional)</label>
                             <button 
-                              onClick={() => setAlertForm({ ...alertForm, volumeCondition: 'above' })}
+                              onClick={() => setAlertForm({ ...alertForm, useVolume: !alertForm.useVolume })}
                               className={cn(
-                                "flex-1 py-1.5 text-xs font-bold rounded-lg border",
-                                alertForm.volumeCondition === 'above' ? "bg-blue-600 text-white border-blue-600" : "bg-white text-blue-600 border-blue-200"
+                                "text-[10px] font-bold px-2 py-0.5 rounded transition-all",
+                                alertForm.useVolume ? "bg-blue-600 text-white" : "bg-gray-200 text-gray-500"
                               )}
-                            >{'>'} Vol</button>
-                            <button 
-                              onClick={() => setAlertForm({ ...alertForm, volumeCondition: 'below' })}
-                              className={cn(
-                                "flex-1 py-1.5 text-xs font-bold rounded-lg border",
-                                alertForm.volumeCondition === 'below' ? "bg-rose-600 text-white border-rose-600" : "bg-white text-rose-600 border-rose-200"
-                              )}
-                            >{'<'} Vol</button>
+                            >
+                              {alertForm.useVolume ? 'Ativado' : 'Desativado'}
+                            </button>
                           </div>
-                          <input 
-                            type="number"
-                            placeholder="Volume Alvo"
-                            value={alertForm.targetVolume}
-                            onChange={(e) => setAlertForm({ ...alertForm, targetVolume: e.target.value })}
-                            className="w-full px-3 py-2 text-sm rounded-xl border border-blue-200 outline-none"
-                          />
+
+                          {alertForm.useVolume && (
+                            <div className="space-y-2 pt-1 animate-in slide-in-from-top-2 duration-200">
+                              <div className="flex gap-2">
+                                <button 
+                                  onClick={() => setAlertForm({ ...alertForm, volumeCondition: 'above' })}
+                                  className={cn(
+                                    "flex-1 py-1.5 text-xs font-bold rounded-lg border",
+                                    alertForm.volumeCondition === 'above' ? "bg-blue-600 text-white border-blue-600" : "bg-white text-blue-600 border-blue-200"
+                                  )}
+                                >Acima</button>
+                                <button 
+                                  onClick={() => setAlertForm({ ...alertForm, volumeCondition: 'below' })}
+                                  className={cn(
+                                    "flex-1 py-1.5 text-xs font-bold rounded-lg border",
+                                    alertForm.volumeCondition === 'below' ? "bg-rose-600 text-white border-rose-600" : "bg-white text-rose-600 border-rose-200"
+                                  )}
+                                >Abaixo</button>
+                              </div>
+                              <input 
+                                type="number"
+                                placeholder="Volume Alvo"
+                                value={alertForm.targetVolume}
+                                onChange={(e) => setAlertForm({ ...alertForm, targetVolume: e.target.value })}
+                                className="w-full px-3 py-2 text-sm rounded-xl border border-blue-200 outline-none"
+                              />
+                            </div>
+                          )}
                         </div>
 
                         <div className="space-y-1.5">
@@ -2229,13 +2222,13 @@ export default function App() {
                         </div>
 
                         <button 
-                          disabled={!alertForm.targetPrice}
+                          disabled={!alertForm.targetPrice || (alertForm.useVolume && !alertForm.targetVolume)}
                           onClick={() => addAlert(
                             alertForm.symbol, 
                             parseFloat(alertForm.targetPrice), 
                             alertForm.condition,
-                            alertForm.targetVolume ? parseFloat(alertForm.targetVolume) : undefined,
-                            alertForm.volumeCondition,
+                            alertForm.useVolume && alertForm.targetVolume ? parseFloat(alertForm.targetVolume) : undefined,
+                            alertForm.useVolume ? alertForm.volumeCondition : undefined,
                             alertForm.frequency
                           )}
                           className="w-full py-2.5 bg-blue-600 text-white rounded-xl text-sm font-bold shadow-md hover:bg-blue-700 disabled:opacity-50 transition-all flex items-center justify-center gap-2"
@@ -2279,7 +2272,7 @@ export default function App() {
                         "text-xs font-bold px-2 py-0.5 rounded",
                         alert.condition === 'above' ? "bg-blue-100 text-blue-700" : "bg-rose-100 text-rose-700"
                       )}>
-                        Price {alert.condition === 'above' ? '≥' : '≤'} R$ {alert.targetPrice.toFixed(2)}
+                        Preço {alert.condition === 'above' ? '≥' : '≤'} R$ {alert.targetPrice.toFixed(2)}
                       </div>
                       {alert.targetVolume && (
                         <div className={cn(
@@ -2513,8 +2506,19 @@ export default function App() {
       </AnimatePresence>
 
       <footer className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 border-t border-gray-200 mt-auto">
-        <div className="flex flex-col md:flex-row items-center justify-between gap-4 text-sm text-gray-500">
-          <p>© 2026 Bolsa Tracker. Dados fornecidos por Brapi.</p>
+        <div className="flex flex-col md:flex-row items-center justify-between gap-6 text-sm text-gray-500">
+          <div className="space-y-4 md:space-y-0 text-center md:text-left">
+            <p>© 2026 Bolsa Tracker. Dados fornecidos por Brapi.</p>
+            <div className="flex items-center justify-center md:justify-start gap-3 mt-4 md:mt-2">
+              <div className="flex items-center gap-2 px-3 py-1 bg-emerald-50 text-emerald-700 rounded-full text-[10px] font-black uppercase tracking-wider border border-emerald-100">
+                <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse shadow-[0_0_8px_rgba(16,185,129,0.6)]" />
+                {onlineUsers} pessoas online
+              </div>
+              <div className="text-[10px] text-gray-400 font-bold uppercase py-1 px-3 bg-gray-50 rounded-full border border-gray-100">
+                Status: Operacional
+              </div>
+            </div>
+          </div>
           <div className="flex items-center gap-6">
             <a href="#" className="hover:text-blue-600 transition-colors">Termos</a>
             <a href="#" className="hover:text-blue-600 transition-colors">Privacidade</a>
