@@ -9,7 +9,8 @@ import {
   LineChart,
   Line,
   Legend,
-  ReferenceLine
+  ReferenceLine,
+  Brush
 } from 'recharts';
 import { 
   Search, 
@@ -32,7 +33,8 @@ import {
   AlertTriangle,
   Newspaper,
   ExternalLink,
-  Clock
+  Clock,
+  Building
 } from 'lucide-react';
 import { cn } from './lib/utils';
 import { calculateSMA, calculateRSI } from './lib/calculations';
@@ -76,6 +78,8 @@ const RANGES = [
 ];
 
 const COLORS = ['#2563eb', '#10b981', '#f43f5e'];
+
+const FAVORITE_FIIS = ['HGLG11', 'KNRI11', 'XPLG11', 'VISC11', 'MXRF11'];
 
 interface StockData {
   symbol: string;
@@ -128,6 +132,7 @@ export default function App() {
   const [alertForm, setAlertForm] = useState<{ symbol: string; targetPrice: string; condition: 'above' | 'below' } | null>(null);
   const [top10Data, setTop10Data] = useState<StockData[]>([]);
   const [top10Loading, setTop10Loading] = useState(false);
+  const [fiiRange, setFiiRange] = useState('1mo');
   const [fiiData, setFiiData] = useState<StockData[]>([]);
   const [fiiLoading, setFiiLoading] = useState(false);
   const [news, setNews] = useState<NewsItem[]>([]);
@@ -333,12 +338,12 @@ export default function App() {
     }
   }, []);
 
-  const fetchFiiData = useCallback(async () => {
+  const fetchFiiData = useCallback(async (selectedRange: string) => {
     setFiiLoading(true);
     try {
       const symbolsStr = FAVORITE_FIIS.join(',');
       const response = await fetch(
-        `https://brapi.dev/api/quote/${symbolsStr}?token=${BRAPI_TOKEN}`
+        `https://brapi.dev/api/quote/${symbolsStr}?range=${selectedRange}&interval=1d&token=${BRAPI_TOKEN}`
       );
       const result = await response.json();
       if (result.results) {
@@ -497,13 +502,13 @@ export default function App() {
 
   useEffect(() => {
     fetchTop10();
-    fetchFiiData();
+    fetchFiiData(fiiRange);
     const interval = setInterval(() => {
       fetchTop10();
-      fetchFiiData();
+      fetchFiiData(fiiRange);
     }, 60000); // Atualiza a cada 1 minuto
     return () => clearInterval(interval);
-  }, [fetchTop10, fetchFiiData]);
+  }, [fetchTop10, fetchFiiData, fiiRange]);
 
   const openDetails = useCallback((symbol: string) => {
     const stock = stocksData.find(s => s.symbol === symbol) || 
@@ -722,6 +727,119 @@ export default function App() {
           </div>
         </section>
 
+        {/* FIIs Ribbon */}
+        <section className="mb-8">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between mb-4 gap-4">
+            <h2 className="text-sm font-bold uppercase tracking-widest text-gray-400 flex items-center gap-2">
+              <Building className="w-4 h-4" />
+              Fundos Imobiliários (FIIs)
+            </h2>
+            <div className="flex items-center gap-3">
+              <div className="flex items-center gap-1 bg-gray-100 p-1 rounded-lg">
+                {RANGES.map((r) => (
+                  <button
+                    key={r.value}
+                    onClick={() => setFiiRange(r.value)}
+                    className={cn(
+                      "px-2 py-1 text-[10px] font-black rounded-md transition-all",
+                      fiiRange === r.value 
+                        ? "bg-white text-blue-600 shadow-sm" 
+                        : "text-gray-400 hover:text-gray-600"
+                    )}
+                  >
+                    {r.label}
+                  </button>
+                ))}
+              </div>
+              <div className="flex items-center gap-2 border-l border-gray-200 pl-3">
+                {fiiLoading && <RefreshCw className="w-3 h-3 text-blue-500 animate-spin" />}
+                <span className="text-[10px] text-gray-400 font-medium">Atualiza a cada 60s</span>
+              </div>
+            </div>
+          </div>
+          <div className="flex gap-6 overflow-x-auto pb-4 no-scrollbar -mx-4 px-4 sm:mx-0 sm:px-0">
+            <AnimatePresence mode="popLayout">
+              {fiiData.length > 0 ? (
+                fiiData.map((stock) => {
+                  const isPositive = stock.regularMarketChange >= 0;
+                  const isTracked = tickers.includes(stock.symbol);
+                  
+                  // Prepare chart data for this specific FII
+                  const fiiChartData = stock.historicalDataPrice?.map(d => ({
+                    close: d.close,
+                    date: new Date(d.date * 1000).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' })
+                  })) || [];
+
+                  return (
+                    <motion.div
+                      layout
+                      key={stock.symbol}
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      className={cn(
+                        "flex-shrink-0 bg-white border rounded-2xl p-4 shadow-sm transition-all text-left min-w-[300px] relative group/top",
+                        isTracked ? "border-blue-400 ring-4 ring-blue-50" : "border-gray-100 hover:border-blue-200 hover:shadow-lg"
+                      )}
+                    >
+                      <div className="flex justify-between items-start mb-4">
+                        <button 
+                          onClick={() => addToComparison(stock.symbol)}
+                          className="flex flex-col gap-0.5 text-left"
+                        >
+                          <span className="text-xs font-black text-blue-600 uppercase tracking-tighter">{stock.symbol}</span>
+                          <span className="text-lg font-black text-gray-900 tracking-tighter">
+                            R$ {stock.regularMarketPrice.toFixed(2)}
+                          </span>
+                          <div className={cn(
+                            "text-[10px] font-black flex items-center gap-0.5",
+                            isPositive ? "text-emerald-600" : "text-rose-600"
+                          )}>
+                            {isPositive ? <ArrowUpRight className="w-3 h-3" /> : <ArrowDownRight className="w-3 h-3" />}
+                            {stock.regularMarketChangePercent.toFixed(2)}%
+                          </div>
+                        </button>
+                        <button 
+                          onClick={() => setSelectedStock(stock)}
+                          className="p-1.5 text-gray-300 hover:text-blue-500 hover:bg-blue-50 rounded-lg transition-all"
+                          title="Ver detalhes"
+                        >
+                          <AlertCircle className="w-5 h-5" />
+                        </button>
+                      </div>
+                      
+                      {/* FII Mini Chart */}
+                      <div className="h-32 w-full mt-2">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <LineChart data={fiiChartData}>
+                            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#FAFAFA" />
+                            <Tooltip 
+                              contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)', fontSize: '10px' }}
+                              labelStyle={{ display: 'none' }}
+                              formatter={(value: number) => [`R$ ${value.toFixed(2)}`, '']}
+                            />
+                            <Line 
+                              type="monotone" 
+                              dataKey="close" 
+                              stroke={isPositive ? "#10b981" : "#f43f5e"} 
+                              strokeWidth={2}
+                              dot={false}
+                              animationDuration={1000}
+                            />
+                          </LineChart>
+                        </ResponsiveContainer>
+                      </div>
+                    </motion.div>
+                  );
+                })
+              ) : (
+                Array.from({ length: 5 }).map((_, i) => (
+                  <div key={i} className="flex-shrink-0 w-[300px] h-[210px] bg-white border border-gray-100 rounded-2xl animate-pulse" />
+                ))
+              )}
+            </AnimatePresence>
+          </div>
+        </section>
+
         {/* Tickers List */}
         <div className="flex flex-col sm:flex-row items-center justify-between gap-4 mb-6">
           <div className="flex flex-wrap gap-3">
@@ -917,6 +1035,13 @@ export default function App() {
                         animationDuration={1500}
                       />
                     )}
+                    <Brush 
+                      dataKey="date" 
+                      height={30} 
+                      stroke="#2563eb" 
+                      fill="#f8fafc"
+                      tickFormatter={(label) => label}
+                    />
                   </LineChart>
                 </ResponsiveContainer>
               </div>
@@ -1547,7 +1672,7 @@ export default function App() {
                     </div>
 
                     <div>
-                      <h3 className="text-sm font-bold text-gray-400 uppercase tracking-widest mb-3">Valuation</h3>
+                      <h3 className="text-sm font-bold text-gray-400 uppercase tracking-widest mb-3">Fundamentos</h3>
                       <div className="space-y-2 p-4 bg-gray-50 rounded-2xl border border-gray-100">
                         <div className="flex justify-between text-xs">
                           <span className="text-gray-400 font-bold uppercase">Cap. de Mercado</span>
