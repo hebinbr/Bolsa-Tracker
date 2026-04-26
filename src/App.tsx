@@ -8,6 +8,9 @@ import {
   ResponsiveContainer,
   LineChart,
   Line,
+  ComposedChart,
+  Bar,
+  Cell,
   Legend,
   ReferenceLine,
   Brush
@@ -44,6 +47,10 @@ interface PriceAlert {
   symbol: string;
   targetPrice: number;
   condition: 'above' | 'below';
+  targetVolume?: number;
+  volumeCondition?: 'above' | 'below';
+  frequency: '1m' | '5m' | '15m' | '30m' | '1h';
+  lastCheckedAt?: string;
   isActive: boolean;
   isTriggered: boolean;
   triggeredAt?: string;
@@ -102,7 +109,11 @@ interface StockData {
   logoUrl?: string;
   historicalDataPrice: {
     date: number;
+    open: number;
+    high: number;
+    low: number;
     close: number;
+    volume?: number;
   }[];
 }
 
@@ -113,6 +124,7 @@ export default function App() {
   });
   const [searchInput, setSearchInput] = useState('');
   const [range, setRange] = useState('1mo');
+  const [chartType, setChartType] = useState<'line' | 'candlestick'>('candlestick');
   const [stocksData, setStocksData] = useState<StockData[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -129,12 +141,21 @@ export default function App() {
   });
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
   const [showAlertPanel, setShowAlertPanel] = useState(false);
-  const [alertForm, setAlertForm] = useState<{ symbol: string; targetPrice: string; condition: 'above' | 'below' } | null>(null);
+  const [alertForm, setAlertForm] = useState<{ 
+    symbol: string; 
+    targetPrice: string; 
+    condition: 'above' | 'below';
+    targetVolume: string;
+    volumeCondition: 'above' | 'below';
+    frequency: '1m' | '5m' | '15m' | '30m' | '1h';
+  } | null>(null);
   const [top10Data, setTop10Data] = useState<StockData[]>([]);
   const [top10Loading, setTop10Loading] = useState(false);
+  const [top10Error, setTop10Error] = useState<string | null>(null);
   const [fiiRange, setFiiRange] = useState('1mo');
   const [fiiData, setFiiData] = useState<StockData[]>([]);
   const [fiiLoading, setFiiLoading] = useState(false);
+  const [fiiError, setFiiError] = useState<string | null>(null);
   const [news, setNews] = useState<NewsItem[]>([]);
   const [newsLoading, setNewsLoading] = useState(false);
   const [newsError, setNewsError] = useState<string | null>(null);
@@ -304,35 +325,53 @@ export default function App() {
 
   const fetchTop10 = useCallback(async () => {
     setTop10Loading(true);
+    setTop10Error(null);
     try {
       // Usando o endpoint de listagem com ordenação por volume para pegar as "maiores" (mais movimentadas)
       const response = await fetch(
         `https://brapi.dev/api/quote/list?sortBy=volume&sortOrder=desc&limit=10&token=${BRAPI_TOKEN}`
       );
       const result = await response.json();
-      if (result.stocks) {
+      
+      const stocksList = result.stocks || result.results || (Array.isArray(result) ? result : null);
+
+      if (!response.ok || result.error || !stocksList) {
+        let msg = result.message || `Erro na API (Status: ${response.status})`;
+        if (response.status === 429 || msg.toLowerCase().includes('quota') || msg.toLowerCase().includes('limit')) {
+          msg = 'Limite de requisições atingido. Tente novamente em alguns minutos.';
+        }
+        console.error('API Error (Top10):', msg);
+        setTop10Error(msg);
+        setTop10Data([]);
+        return;
+      }
+
+      if (stocksList) {
         // No endpoint de lista, os campos podem ter nomes ligeiramente diferentes ou estar em 'stocks'
-        // Brapi /api/quote/list retorna { stocks: [ { stock: 'PETR4', name: 'Petrobras', close: 30.1, change: 1.2, ... } ] }
-        const formattedData: StockData[] = result.stocks.map((s: any) => ({
-          symbol: s.stock,
-          shortName: s.name,
-          longName: s.name,
-          regularMarketPrice: s.close,
-          regularMarketChange: s.change,
-          regularMarketChangePercent: s.change, // Brapi list sometimes returns change as percent or just change
+        const formattedData: StockData[] = stocksList.map((s: any) => ({
+          symbol: s.stock || s.symbol || '',
+          shortName: s.name || s.shortName || s.longName || '',
+          longName: s.name || s.longName || s.shortName || '',
+          regularMarketPrice: s.close || s.regularMarketPrice || 0,
+          regularMarketChange: s.change || s.regularMarketChange || 0,
+          regularMarketChangePercent: s.change || s.regularMarketChangePercent || 0,
           regularMarketTime: new Date().toISOString(),
-          regularMarketDayHigh: s.close, // List endpoint has limited data
-          regularMarketDayLow: s.close,
-          regularMarketVolume: s.volume,
+          regularMarketDayHigh: s.close || s.regularMarketDayHigh || 0,
+          regularMarketDayLow: s.close || s.regularMarketDayLow || 0,
+          regularMarketVolume: s.volume || s.regularMarketVolume || 0,
           priceEarnings: s.priceEarnings,
           marketCap: s.marketCap,
           dividendYield: s.dividendYield,
           historicalDataPrice: []
         }));
-        setTop10Data(formattedData);
+        setTop10Data(formattedData.filter(s => s.symbol !== ''));
+      } else {
+        setTop10Data([]);
       }
     } catch (err) {
       console.error('Erro ao buscar Top 10:', err);
+      setTop10Error('Ocorreu um erro ao conectar com o servidor.');
+      setTop10Data([]);
     } finally {
       setTop10Loading(false);
     }
@@ -340,34 +379,61 @@ export default function App() {
 
   const fetchFiiData = useCallback(async (selectedRange: string) => {
     setFiiLoading(true);
+    setFiiError(null);
     try {
       const symbolsStr = FAVORITE_FIIS.join(',');
       const response = await fetch(
         `https://brapi.dev/api/quote/${symbolsStr}?range=${selectedRange}&interval=1d&token=${BRAPI_TOKEN}`
       );
       const result = await response.json();
+      if (!response.ok || result.error || !result.results) {
+        let msg = result.message || `Erro na API (Status: ${response.status})`;
+        if (response.status === 429 || msg.toLowerCase().includes('quota') || msg.toLowerCase().includes('limit')) {
+          msg = 'Limite atingido. Tente em instantes.';
+        }
+        console.error('API Error (FIIs):', msg);
+        setFiiError(msg);
+        return;
+      }
       if (result.results) {
         setFiiData(result.results);
       }
     } catch (err) {
       console.error('Erro ao buscar FIIs:', err);
+      setFiiError('Erro de conexão.');
     } finally {
       setFiiLoading(false);
     }
   }, []);
 
-  const addAlert = (symbol: string, targetPrice: number, condition: 'above' | 'below') => {
+  const addAlert = (
+    symbol: string, 
+    targetPrice: number, 
+    condition: 'above' | 'below', 
+    targetVolume?: number, 
+    volumeCondition?: 'above' | 'below',
+    frequency: '1m' | '5m' | '15m' | '30m' | '1h' = '1m'
+  ) => {
     const newAlert: PriceAlert = {
       id: Math.random().toString(36).substring(2, 9),
       symbol,
       targetPrice,
       condition,
+      targetVolume,
+      volumeCondition,
+      frequency,
       isActive: true,
       isTriggered: false,
       createdAt: new Date().toISOString()
     };
     setAlerts(prev => [...prev, newAlert]);
-    addNotification('Alerta Criado', `Notificaremos quando ${symbol} estiver ${condition === 'above' ? 'acima' : 'abaixo'} de R$ ${targetPrice.toFixed(2)}`, 'success');
+    
+    let msg = `Notificaremos quando ${symbol} estiver ${condition === 'above' ? 'acima' : 'abaixo'} de R$ ${targetPrice.toFixed(2)}`;
+    if (targetVolume) {
+      msg += ` E volume estiver ${volumeCondition === 'above' ? 'acima' : 'abaixo'} de ${targetVolume.toLocaleString()}`;
+    }
+    
+    addNotification('Alerta Criado', msg, 'success');
     setAlertForm(null);
   };
 
@@ -393,21 +459,48 @@ export default function App() {
   const checkAlerts = useCallback((data: StockData[]) => {
     setAlerts(prevAlerts => {
       let changed = false;
+      const now = new Date();
+      
       const newAlerts = prevAlerts.map(alert => {
         if (!alert.isActive || alert.isTriggered) return alert;
+
+        // Frequency Check
+        if (alert.lastCheckedAt) {
+          const lastCheck = new Date(alert.lastCheckedAt);
+          const diffMs = now.getTime() - lastCheck.getTime();
+          const freqMapMins: Record<string, number> = { '1m': 1, '5m': 5, '15m': 15, '30m': 30, '1h': 60 };
+          const minMs = (freqMapMins[alert.frequency] || 1) * 60 * 1000;
+          if (diffMs < minMs) return alert;
+        }
 
         const stock = data.find(s => s.symbol === alert.symbol);
         if (!stock) return alert;
 
-        const triggered = alert.condition === 'above' 
+        // Price Condition
+        const priceTriggered = alert.condition === 'above' 
           ? stock.regularMarketPrice >= alert.targetPrice
           : stock.regularMarketPrice <= alert.targetPrice;
 
+        // Volume Condition (optional)
+        let volumeTriggered = true;
+        if (alert.targetVolume !== undefined && alert.volumeCondition) {
+          volumeTriggered = alert.volumeCondition === 'above'
+            ? (stock.regularMarketVolume || 0) >= alert.targetVolume
+            : (stock.regularMarketVolume || 0) <= alert.targetVolume;
+        }
+
+        const triggered = priceTriggered && volumeTriggered;
+
         if (triggered) {
           changed = true;
+          let condStr = `${stock.symbol} atingiu R$ ${stock.regularMarketPrice.toFixed(2)} (${alert.condition === 'above' ? 'acima' : 'abaixo'} de R$ ${alert.targetPrice.toFixed(2)})`;
+          if (alert.targetVolume) {
+            condStr += ` e volume de ${(stock.regularMarketVolume / 1e6).toFixed(1)}M (${alert.volumeCondition === 'above' ? 'acima' : 'abaixo'} de ${(alert.targetVolume / 1e6).toFixed(1)}M)`;
+          }
+
           addNotification(
             `Alerta de Preço: ${stock.symbol}`,
-            `${stock.symbol} atingiu R$ ${stock.regularMarketPrice.toFixed(2)} (${alert.condition === 'above' ? 'acima' : 'abaixo'} de R$ ${alert.targetPrice.toFixed(2)})`,
+            condStr,
             'alert'
           );
 
@@ -415,7 +508,7 @@ export default function App() {
           if ("Notification" in window && Notification.permission === "granted") {
             try {
               new Notification(`Bolsa Tracker: ${stock.symbol}`, {
-                body: `${stock.symbol} atingiu R$ ${stock.regularMarketPrice.toFixed(2)}`,
+                body: condStr,
                 icon: 'https://brapi.dev/favicon.ico'
               });
             } catch (e) {
@@ -423,9 +516,12 @@ export default function App() {
             }
           }
 
-          return { ...alert, isTriggered: true, triggeredAt: new Date().toISOString() };
+          return { ...alert, isTriggered: true, triggeredAt: now.toISOString(), lastCheckedAt: now.toISOString() };
         }
-        return alert;
+        
+        // If not triggered, update last checked time
+        changed = true;
+        return { ...alert, lastCheckedAt: now.toISOString() };
       });
       return changed ? newAlerts : prevAlerts;
     });
@@ -469,15 +565,30 @@ export default function App() {
       );
       const result = await response.json();
 
+      if (!response.ok || result.error || result.message) {
+        let msg = result.message || `Erro na API do Brapi (Status: ${response.status})`;
+        if (response.status === 429 || msg.toLowerCase().includes('quota') || msg.toLowerCase().includes('limit')) {
+          msg = 'Limite de requisições da API atingido. Tente novamente em alguns minutos.';
+        }
+        setError(msg);
+        return;
+      }
+
       if (result.results && result.results.length > 0) {
         const validResults = result.results.filter((r: any) => r.regularMarketPrice !== undefined);
+        const invalidResults = result.results.filter((r: any) => r.error === true);
+        
+        if (invalidResults.length > 0) {
+          console.warn('Alguns ativos não foram encontrados:', invalidResults.map((r: any) => r.symbol).join(', '));
+        }
+
         if (validResults.length === 0) {
-          setError('Nenhuma das ações foi encontrada.');
+          setError('Nenhum dos ativos informados foi encontrado.');
         }
         setStocksData(validResults);
         checkAlerts(validResults);
       } else {
-        setError('Erro ao processar as ações. Verifique os códigos.');
+        setError('Ocorreu um erro ao processar os dados dos ativos.');
       }
     } catch (err) {
       setError('Erro ao buscar dados. Tente novamente mais tarde.');
@@ -577,6 +688,13 @@ export default function App() {
           dataMap[fullDate] = { date: dateStr, fullDate };
         }
         dataMap[fullDate][stock.symbol] = day.close;
+        dataMap[fullDate][`${stock.symbol}_OHLC`] = {
+          open: day.open,
+          high: day.high,
+          low: day.low,
+          close: day.close,
+          isPositive: day.close >= day.open
+        };
         
         // Add indicators for the primary stock (optional: could add for all, but for UI we use first)
         // Only add indicators for the FIRST stock to avoid clutter
@@ -666,7 +784,7 @@ export default function App() {
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-sm font-bold uppercase tracking-widest text-gray-400 flex items-center gap-2">
               <TrendingUp className="w-4 h-4" />
-              Mercado B3 (Top 10)
+              Mercado B3 (Mais Negociadas)
             </h2>
             <div className="flex items-center gap-2">
               {top10Loading && <RefreshCw className="w-3 h-3 text-blue-500 animate-spin" />}
@@ -675,7 +793,25 @@ export default function App() {
           </div>
           <div className="flex gap-4 overflow-x-auto pb-4 no-scrollbar -mx-4 px-4 sm:mx-0 sm:px-0">
             <AnimatePresence mode="popLayout">
-              {top10Data.length > 0 ? (
+              {top10Error ? (
+                <div className="flex-shrink-0 w-full bg-white border border-red-100 rounded-2xl p-4 flex flex-col items-center justify-center gap-3 text-center">
+                  <div className="flex items-center gap-2 text-red-600 font-bold text-xs uppercase">
+                    <AlertCircle className="w-4 h-4" />
+                    Erro ao carregar
+                  </div>
+                  <p className="text-[10px] text-gray-500 max-w-[200px]">{top10Error}</p>
+                  <button 
+                    onClick={() => fetchTop10()}
+                    className="px-4 py-1.5 bg-blue-600 text-white rounded-xl text-[10px] font-black uppercase shadow-md hover:bg-blue-700 transition-all flex items-center gap-2"
+                  >
+                    <RefreshCw className="w-3 h-3" /> Tentar Novamente
+                  </button>
+                </div>
+              ) : top10Loading ? (
+                Array.from({ length: 6 }).map((_, i) => (
+                  <div key={i} className="flex-shrink-0 w-[160px] h-[94px] bg-white border border-gray-100 rounded-2xl animate-pulse" />
+                ))
+              ) : top10Data.length > 0 ? (
                 top10Data.map((stock) => {
                   const isPositive = stock.regularMarketChange >= 0;
                   const isTracked = tickers.includes(stock.symbol);
@@ -700,6 +836,11 @@ export default function App() {
                             R$ {stock.regularMarketPrice.toFixed(2)}
                           </span>
                         </div>
+                        {stock.regularMarketVolume && (
+                          <div className="text-[9px] font-black text-gray-400 uppercase tracking-tight flex items-center gap-1 opacity-60">
+                             Vol: {(stock.regularMarketVolume / 1e6).toFixed(1)}M
+                          </div>
+                        )}
                         <div className={cn(
                           "text-[10px] font-black flex items-center gap-0.5 mt-0.5",
                           isPositive ? "text-emerald-600" : "text-rose-600"
@@ -719,9 +860,9 @@ export default function App() {
                   );
                 })
               ) : (
-                Array.from({ length: 6 }).map((_, i) => (
-                  <div key={i} className="flex-shrink-0 w-[160px] h-[94px] bg-white border border-gray-100 rounded-2xl animate-pulse" />
-                ))
+                <div className="flex-shrink-0 w-full bg-white border border-dashed border-gray-200 rounded-2xl p-4 flex flex-col items-center justify-center gap-2 text-center h-[94px]">
+                  <p className="text-[10px] text-gray-400 font-medium">Nenhum dado das mais negociadas disponível no momento.</p>
+                </div>
               )}
             </AnimatePresence>
           </div>
@@ -759,16 +900,40 @@ export default function App() {
           </div>
           <div className="flex gap-6 overflow-x-auto pb-4 no-scrollbar -mx-4 px-4 sm:mx-0 sm:px-0">
             <AnimatePresence mode="popLayout">
-              {fiiData.length > 0 ? (
+              {fiiError ? (
+                <div className="flex-shrink-0 w-full bg-white border border-red-100 rounded-2xl p-8 flex flex-col items-center justify-center gap-3 text-center min-h-[210px]">
+                  <AlertCircle className="w-8 h-8 text-red-500" />
+                  <p className="text-xs font-bold text-gray-700">{fiiError}</p>
+                  <button 
+                    onClick={() => fetchFiiData(fiiRange)}
+                    className="px-6 py-2 bg-blue-600 text-white rounded-xl text-[10px] font-black uppercase shadow-md hover:bg-blue-700 transition-all"
+                  >
+                    Tentar Novamente
+                  </button>
+                </div>
+              ) : fiiLoading ? (
+                Array.from({ length: 5 }).map((_, i) => (
+                  <div key={i} className="flex-shrink-0 w-[300px] h-[210px] bg-white border border-gray-100 rounded-2xl animate-pulse" />
+                ))
+              ) : fiiData.length > 0 ? (
                 fiiData.map((stock) => {
                   const isPositive = stock.regularMarketChange >= 0;
                   const isTracked = tickers.includes(stock.symbol);
                   
                   // Prepare chart data for this specific FII
-                  const fiiChartData = stock.historicalDataPrice?.map(d => ({
-                    close: d.close,
-                    date: new Date(d.date * 1000).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' })
-                  })) || [];
+                  const fiiChartData = stock.historicalDataPrice?.map(d => {
+                    const isPos = d.close >= d.open;
+                    return {
+                      date: new Date(d.date * 1000).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' }),
+                      open: d.open,
+                      close: d.close,
+                      high: d.high,
+                      low: d.low,
+                      isPositive: isPos,
+                      wick: [d.low, d.high],
+                      body: [d.open, d.close]
+                    };
+                  }) || [];
 
                   return (
                     <motion.div
@@ -807,34 +972,54 @@ export default function App() {
                         </button>
                       </div>
                       
-                      {/* FII Mini Chart */}
+                      {/* FII Mini Chart (Candlestick) */}
                       <div className="h-32 w-full mt-2">
                         <ResponsiveContainer width="100%" height="100%">
-                          <LineChart data={fiiChartData}>
+                          <ComposedChart data={fiiChartData}>
                             <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#FAFAFA" />
+                            <XAxis dataKey="date" hide />
+                            <YAxis domain={['auto', 'auto']} hide />
                             <Tooltip 
                               contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)', fontSize: '10px' }}
                               labelStyle={{ display: 'none' }}
-                              formatter={(value: number) => [`R$ ${value.toFixed(2)}`, '']}
+                              content={({ active, payload }) => {
+                                if (active && payload && payload.length) {
+                                  const d = payload[0].payload;
+                                  return (
+                                    <div className="bg-white p-2 rounded shadow border border-gray-100 text-[10px] font-bold">
+                                      <p className="border-b mb-1 pb-1">{d.date}</p>
+                                      <p>O: {d.open.toFixed(2)}</p>
+                                      <p>H: {d.high.toFixed(2)}</p>
+                                      <p>L: {d.low.toFixed(2)}</p>
+                                      <p>C: {d.close.toFixed(2)}</p>
+                                    </div>
+                                  );
+                                }
+                                return null;
+                              }}
                             />
-                            <Line 
-                              type="monotone" 
-                              dataKey="close" 
-                              stroke={isPositive ? "#10b981" : "#f43f5e"} 
-                              strokeWidth={2}
-                              dot={false}
-                              animationDuration={1000}
-                            />
-                          </LineChart>
+                            {/* Wick */}
+                            <Bar dataKey="wick" fill="#000" barSize={1.5}>
+                              {fiiChartData.map((entry, index) => (
+                                <Cell key={`wick-${index}`} fill={entry.isPositive ? '#10b981' : '#f43f5e'} />
+                              ))}
+                            </Bar>
+                            {/* Body */}
+                            <Bar dataKey="body" barSize={8}>
+                              {fiiChartData.map((entry, index) => (
+                                <Cell key={`body-${index}`} fill={entry.isPositive ? '#10b981' : '#f43f5e'} />
+                              ))}
+                            </Bar>
+                          </ComposedChart>
                         </ResponsiveContainer>
                       </div>
                     </motion.div>
                   );
                 })
               ) : (
-                Array.from({ length: 5 }).map((_, i) => (
-                  <div key={i} className="flex-shrink-0 w-[300px] h-[210px] bg-white border border-gray-100 rounded-2xl animate-pulse" />
-                ))
+                <div className="flex-shrink-0 w-full bg-white border border-dashed border-gray-200 rounded-2xl p-8 flex flex-col items-center justify-center gap-3 text-center min-h-[210px]">
+                  <p className="text-[10px] text-gray-400 font-medium">Nenhum dado de FIIs disponível no momento.</p>
+                </div>
               )}
             </AnimatePresence>
           </div>
@@ -944,9 +1129,17 @@ export default function App() {
         )}
 
         {error && (
-          <div className="mb-6 p-4 bg-red-50 border border-red-100 rounded-xl flex items-center gap-3 text-red-700 animate-in fade-in slide-in-from-top-2">
-            <AlertCircle className="w-5 h-5 shrink-0" />
-            <p className="text-sm font-medium">{error}</p>
+          <div className="mb-6 p-4 bg-red-50 border border-red-100 rounded-xl flex items-center justify-between gap-3 text-red-700 animate-in fade-in slide-in-from-top-2">
+            <div className="flex items-center gap-3">
+              <AlertCircle className="w-5 h-5 shrink-0" />
+              <p className="text-sm font-medium">{error}</p>
+            </div>
+            <button 
+              onClick={() => fetchAllData(tickers, range)}
+              className="px-3 py-1 bg-white border border-red-200 rounded-lg text-[10px] font-black uppercase hover:bg-red-100 transition-colors shadow-sm whitespace-nowrap"
+            >
+              Tentar Novamente
+            </button>
           </div>
         )}
 
@@ -955,9 +1148,33 @@ export default function App() {
             {/* Chart Area */}
             <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
-                <div>
-                  <h2 className="text-xl font-bold tracking-tight">Comparação de Desempenho</h2>
-                  <p className="text-sm text-gray-500">Visualizando dados históricos lado a lado</p>
+                <div className="flex items-center gap-4">
+                  <div>
+                    <h2 className="text-xl font-bold tracking-tight">Análise de Mercado</h2>
+                    <p className="text-sm text-gray-500">Visualizando dados históricos e tendências</p>
+                  </div>
+                  <div className="hidden lg:flex items-center gap-1 bg-gray-100 p-1 rounded-xl">
+                    <button
+                      onClick={() => setChartType('line')}
+                      className={cn(
+                        "p-1.5 rounded-lg transition-all",
+                        chartType === 'line' ? "bg-white text-blue-600 shadow-sm" : "text-gray-400 hover:text-gray-600"
+                      )}
+                      title="Gráfico de Linha"
+                    >
+                      <Activity className="w-4 h-4" />
+                    </button>
+                    <button
+                      onClick={() => setChartType('candlestick')}
+                      className={cn(
+                        "p-1.5 rounded-lg transition-all",
+                        chartType === 'candlestick' ? "bg-white text-blue-600 shadow-sm" : "text-gray-400 hover:text-gray-600"
+                      )}
+                      title="Gráfico de Velas (Candlestick)"
+                    >
+                      <BarChart3 className="w-4 h-4" />
+                    </button>
+                  </div>
                 </div>
                 
                 {/* Range Selector */}
@@ -982,67 +1199,212 @@ export default function App() {
               {/* Chart */}
               <div className="h-[450px] w-full">
                 <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={chartData}>
-                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#F0F0F0" />
-                    <XAxis 
-                      dataKey="date" 
-                      axisLine={false}
-                      tickLine={false}
-                      tick={{ fontSize: 10, fill: '#9CA3AF' }}
-                      dy={10}
-                      minTickGap={30}
-                    />
-                    <YAxis 
-                      axisLine={false}
-                      tickLine={false}
-                      tick={{ fontSize: 10, fill: '#9CA3AF' }}
-                      domain={['auto', 'auto']}
-                    />
-                    <Tooltip 
-                      contentStyle={{ 
-                        borderRadius: '12px', 
-                        border: 'none', 
-                        boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)',
-                        padding: '12px'
-                      }}
-                      labelStyle={{ fontWeight: 'bold', marginBottom: '4px', color: '#374151' }}
-                      labelFormatter={(label, payload) => payload[0]?.payload?.fullDate || label}
-                      formatter={(value: number, name: string) => [`R$ ${value.toFixed(2)}`, name]}
-                    />
-                    <Legend verticalAlign="top" height={36}/>
-                    {stocksData.map((stock, idx) => (
-                      <Line 
-                        key={stock.symbol}
-                        type="monotone" 
-                        dataKey={stock.symbol} 
-                        stroke={COLORS[idx]} 
-                        strokeWidth={2.5}
-                        dot={false}
-                        activeDot={{ r: 6, strokeWidth: 0 }}
-                        animationDuration={1500}
-                        name={stock.symbol}
+                  {chartType === 'line' ? (
+                    <LineChart data={chartData}>
+                      <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#F0F0F0" />
+                      <XAxis 
+                        dataKey="date" 
+                        axisLine={false}
+                        tickLine={false}
+                        tick={{ fontSize: 10, fill: '#9CA3AF' }}
+                        dy={10}
+                        minTickGap={30}
                       />
-                    ))}
-                    {indicatorSettings.showSMA && stocksData.length > 0 && (
-                      <Line 
-                        type="monotone" 
-                        dataKey={`${tickers[0]}_SMA`} 
-                        stroke="#9333ea" 
-                        strokeWidth={1.5}
-                        strokeDasharray="5 5"
-                        dot={false}
-                        name={`SMA ${indicatorSettings.smaPeriod} (${tickers[0]})`}
-                        animationDuration={1500}
+                      <YAxis 
+                        axisLine={false}
+                        tickLine={false}
+                        tick={{ fontSize: 10, fill: '#9CA3AF' }}
+                        domain={['auto', 'auto']}
+                        tickFormatter={(value) => `R$ ${value}`}
                       />
-                    )}
-                    <Brush 
-                      dataKey="date" 
-                      height={30} 
-                      stroke="#2563eb" 
-                      fill="#f8fafc"
-                      tickFormatter={(label) => label}
-                    />
-                  </LineChart>
+                      <Tooltip 
+                        contentStyle={{ 
+                          borderRadius: '12px', 
+                          border: 'none', 
+                          boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)',
+                          padding: '12px'
+                        }}
+                        labelStyle={{ fontWeight: 'bold', marginBottom: '4px', color: '#374151' }}
+                        labelFormatter={(label, payload) => payload[0]?.payload?.fullDate || label}
+                        formatter={(value: number, name: string) => [`R$ ${value.toFixed(2)}`, name]}
+                      />
+                      <Legend verticalAlign="top" height={36}/>
+                      {stocksData.map((stock, idx) => (
+                        <Line 
+                          key={stock.symbol}
+                          type="monotone" 
+                          dataKey={stock.symbol} 
+                          stroke={COLORS[idx]} 
+                          strokeWidth={2.5}
+                          dot={false}
+                          activeDot={{ r: 6, strokeWidth: 0 }}
+                          animationDuration={1500}
+                          name={stock.symbol}
+                        />
+                      ))}
+                      {indicatorSettings.showSMA && stocksData.length > 0 && (
+                        <Line 
+                          type="monotone" 
+                          dataKey={`${tickers[0]}_SMA`} 
+                          stroke="#9333ea" 
+                          strokeWidth={1.5}
+                          strokeDasharray="5 5"
+                          dot={false}
+                          name={`SMA ${indicatorSettings.smaPeriod} (${tickers[0]})`}
+                          animationDuration={1500}
+                        />
+                      )}
+                      <Brush 
+                        dataKey="date" 
+                        height={30} 
+                        stroke="#2563eb" 
+                        fill="#f8fafc"
+                        tickFormatter={(label) => label}
+                      />
+                    </LineChart>
+                  ) : (
+                    <ComposedChart data={chartData}>
+                      <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#F0F0F0" />
+                      <XAxis 
+                        dataKey="date" 
+                        axisLine={false}
+                        tickLine={false}
+                        tick={{ fontSize: 10, fill: '#9CA3AF' }}
+                        dy={10}
+                        minTickGap={30}
+                      />
+                      <YAxis 
+                        axisLine={false}
+                        tickLine={false}
+                        tick={{ fontSize: 10, fill: '#9CA3AF' }}
+                        domain={['auto', 'auto']}
+                        tickFormatter={(value) => `R$ ${value}`}
+                      />
+                      <Tooltip 
+                        contentStyle={{ 
+                          borderRadius: '12px', 
+                          border: 'none', 
+                          boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)',
+                          padding: '12px'
+                        }}
+                        labelStyle={{ fontWeight: 'bold', marginBottom: '4px', color: '#374151' }}
+                        labelFormatter={(label, payload) => payload[0]?.payload?.fullDate || label}
+                        content={({ active, payload, label }) => {
+                          if (active && payload && payload.length) {
+                            const data = payload[0].payload;
+                            const symbol = tickers[0];
+                            const ohlc = data[`${symbol}_OHLC`];
+                            if (!ohlc) return null;
+                            return (
+                              <div className="bg-white p-4 rounded-xl shadow-xl border border-gray-100 min-w-[160px]">
+                                <p className="text-xs font-black text-gray-400 uppercase mb-2">{data.fullDate}</p>
+                                <p className="text-sm font-black text-blue-600 mb-3">{symbol}</p>
+                                <div className="space-y-1.5">
+                                  <div className="flex justify-between text-xs font-bold">
+                                    <span className="text-gray-400">ABERTURA</span>
+                                    <span>R$ {ohlc.open.toFixed(2)}</span>
+                                  </div>
+                                  <div className="flex justify-between text-xs font-bold">
+                                    <span className="text-gray-400">MÁXIMA</span>
+                                    <span className="text-emerald-600">R$ {ohlc.high.toFixed(2)}</span>
+                                  </div>
+                                  <div className="flex justify-between text-xs font-bold">
+                                    <span className="text-gray-400">MÍNIMA</span>
+                                    <span className="text-rose-600">R$ {ohlc.low.toFixed(2)}</span>
+                                  </div>
+                                  <div className="flex justify-between text-xs font-bold pt-1 border-t border-gray-50">
+                                    <span className="text-gray-400">FECHAMENTO</span>
+                                    <span>R$ {ohlc.close.toFixed(2)}</span>
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          }
+                          return null;
+                        }}
+                      />
+                      <Legend verticalAlign="top" height={36}/>
+                      
+                      {/* Main Ticker Chart */}
+                      {chartType === 'candlestick' ? (
+                        <>
+                          {/* Candlestick Wick (using a narrow Bar) */}
+                          <Bar 
+                            dataKey={(data) => {
+                              const ohlc = data[`${tickers[0]}_OHLC`];
+                              return ohlc ? [ohlc.low, ohlc.high] : null;
+                            }}
+                            fill="#000"
+                            barSize={2}
+                            name={`Wick (${tickers[0]})`}
+                          >
+                            {chartData.map((entry, index) => {
+                              const ohlc = entry[`${tickers[0]}_OHLC`];
+                              const color = ohlc?.isPositive ? '#10b981' : '#f43f5e';
+                              return <Cell key={`wick-${index}`} fill={color} />;
+                            })}
+                          </Bar>
+
+                          {/* Candlestick Body */}
+                          <Bar 
+                            dataKey={(data) => {
+                              const ohlc = data[`${tickers[0]}_OHLC`];
+                              return ohlc ? [ohlc.open, ohlc.close] : null;
+                            }}
+                            name={`Candle (${tickers[0]})`}
+                          >
+                            {chartData.map((entry, index) => {
+                              const ohlc = entry[`${tickers[0]}_OHLC`];
+                              const color = ohlc?.isPositive ? '#10b981' : '#f43f5e';
+                              return <Cell key={`body-${index}`} fill={color} />;
+                            })}
+                          </Bar>
+                        </>
+                      ) : (
+                        <Line 
+                          type="monotone" 
+                          dataKey={tickers[0]} 
+                          stroke={COLORS[0]} 
+                          strokeWidth={3}
+                          dot={false}
+                          name={tickers[0]}
+                        />
+                      )}
+
+                      {/* Line overlays for other comparing stocks */}
+                      {stocksData.slice(1).map((stock, idx) => (
+                        <Line 
+                          key={stock.symbol}
+                          type="monotone" 
+                          dataKey={stock.symbol} 
+                          stroke={COLORS[idx + 1]} 
+                          strokeWidth={2}
+                          dot={false}
+                          name={stock.symbol}
+                        />
+                      ))}
+
+                      {indicatorSettings.showSMA && stocksData.length > 0 && (
+                        <Line 
+                          type="monotone" 
+                          dataKey={`${tickers[0]}_SMA`} 
+                          stroke="#9333ea" 
+                          strokeWidth={1.5}
+                          strokeDasharray="5 5"
+                          dot={false}
+                          name={`SMA ${indicatorSettings.smaPeriod} (${tickers[0]})`}
+                        />
+                      )}
+                      
+                      <Brush 
+                        dataKey="date" 
+                        height={30} 
+                        stroke="#2563eb" 
+                        fill="#f8fafc"
+                        tickFormatter={(label) => label}
+                      />
+                    </ComposedChart>
+                  )}
                 </ResponsiveContainer>
               </div>
 
@@ -1129,7 +1491,14 @@ export default function App() {
                           </div>
                         </div>
                         <button 
-                          onClick={() => setAlertForm({ symbol: stock.symbol, targetPrice: stock.regularMarketPrice.toString(), condition: 'above' })}
+                          onClick={() => setAlertForm({ 
+                            symbol: stock.symbol, 
+                            targetPrice: stock.regularMarketPrice.toString(), 
+                            condition: 'above',
+                            targetVolume: '',
+                            volumeCondition: 'above',
+                            frequency: '1m'
+                          })}
                           className="p-1.5 bg-gray-100 text-gray-500 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-all"
                           title="Definir alerta de preço"
                         >
@@ -1150,44 +1519,99 @@ export default function App() {
                             <X className="w-3.5 h-3.5 text-blue-400" />
                           </button>
                         </div>
-                        <div className="space-y-3">
-                          <div className="flex gap-2">
-                            <button 
-                              onClick={() => setAlertForm(prev => prev ? { ...prev, condition: 'above' } : null)}
-                              className={cn(
-                                "flex-1 py-1 text-[10px] font-bold rounded-md border transition-all",
-                                alertForm.condition === 'above' ? "bg-blue-600 text-white border-blue-600" : "bg-white text-blue-600 border-blue-200"
-                              )}
-                            >
-                              Acima de
-                            </button>
-                            <button 
-                              onClick={() => setAlertForm(prev => prev ? { ...prev, condition: 'below' } : null)}
-                              className={cn(
-                                "flex-1 py-1 text-[10px] font-bold rounded-md border transition-all",
-                                alertForm.condition === 'below' ? "bg-rose-600 text-white border-rose-600" : "bg-white text-rose-600 border-rose-200"
-                              )}
-                            >
-                              Abaixo de
-                            </button>
-                          </div>
-                          <div className="flex gap-2">
+                        <div className="space-y-4">
+                          <div className="space-y-1.5">
+                            <label className="text-[10px] font-black uppercase text-blue-800 tracking-wider">Condição de Preço</label>
+                            <div className="flex gap-2">
+                              <button 
+                                onClick={() => setAlertForm(prev => prev ? { ...prev, condition: 'above' } : null)}
+                                className={cn(
+                                  "flex-1 py-1 text-[10px] font-bold rounded-md border transition-all",
+                                  alertForm.condition === 'above' ? "bg-blue-600 text-white border-blue-600" : "bg-white text-blue-600 border-blue-200"
+                                )}
+                              >
+                                Acima de
+                              </button>
+                              <button 
+                                onClick={() => setAlertForm(prev => prev ? { ...prev, condition: 'below' } : null)}
+                                className={cn(
+                                  "flex-1 py-1 text-[10px] font-bold rounded-md border transition-all",
+                                  alertForm.condition === 'below' ? "bg-rose-600 text-white border-rose-600" : "bg-white text-rose-600 border-rose-200"
+                                )}
+                              >
+                                Abaixo de
+                              </button>
+                            </div>
                             <input 
                               type="number"
                               step="0.01"
                               value={alertForm.targetPrice}
                               onChange={(e) => setAlertForm(prev => prev ? { ...prev, targetPrice: e.target.value } : null)}
-                              className="flex-1 px-3 py-1.5 text-xs rounded-lg border border-blue-200 outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-400 transition-all font-bold"
-                              placeholder="Valor alvo..."
+                              className="w-full px-3 py-1.5 text-xs rounded-lg border border-blue-200 outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-400 transition-all font-bold"
+                              placeholder="Preço alvo (BRL)..."
                             />
-                            <button 
-                              disabled={!alertForm.targetPrice || isNaN(parseFloat(alertForm.targetPrice))}
-                              onClick={() => addAlert(stock.symbol, parseFloat(alertForm.targetPrice), alertForm.condition)}
-                              className="px-3 py-1.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors"
-                            >
-                              <Plus className="w-4 h-4" />
-                            </button>
                           </div>
+
+                          <div className="space-y-1.5">
+                            <label className="text-[10px] font-black uppercase text-blue-800 tracking-wider">Condição de Volume (Opcional)</label>
+                            <div className="flex gap-2">
+                              <button 
+                                onClick={() => setAlertForm(prev => prev ? { ...prev, volumeCondition: 'above' } : null)}
+                                className={cn(
+                                  "flex-1 py-1 text-[10px] font-bold rounded-md border transition-all",
+                                  alertForm.volumeCondition === 'above' ? "bg-blue-600 text-white border-blue-600" : "bg-white text-blue-600 border-blue-200"
+                                )}
+                              >
+                                {'>'} Volume
+                              </button>
+                              <button 
+                                onClick={() => setAlertForm(prev => prev ? { ...prev, volumeCondition: 'below' } : null)}
+                                className={cn(
+                                  "flex-1 py-1 text-[10px] font-bold rounded-md border transition-all",
+                                  alertForm.volumeCondition === 'below' ? "bg-rose-600 text-white border-rose-600" : "bg-white text-rose-600 border-rose-200"
+                                )}
+                              >
+                                {'<'} Volume
+                              </button>
+                            </div>
+                            <input 
+                              type="number"
+                              value={alertForm.targetVolume}
+                              onChange={(e) => setAlertForm(prev => prev ? { ...prev, targetVolume: e.target.value } : null)}
+                              className="w-full px-3 py-1.5 text-xs rounded-lg border border-blue-200 outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-400 transition-all font-bold"
+                              placeholder="Volume alvo..."
+                            />
+                          </div>
+
+                          <div className="space-y-1.5">
+                            <label className="text-[10px] font-black uppercase text-blue-800 tracking-wider">Frequência de Checagem</label>
+                            <select 
+                              value={alertForm.frequency}
+                              onChange={(e) => setAlertForm(prev => prev ? { ...prev, frequency: e.target.value as any } : null)}
+                              className="w-full px-3 py-1.5 text-xs rounded-lg border border-blue-200 outline-none bg-white font-bold"
+                            >
+                              <option value="1m">A cada 1 minuto</option>
+                              <option value="5m">A cada 5 minutos</option>
+                              <option value="15m">A cada 15 minutos</option>
+                              <option value="30m">A cada 30 minutos</option>
+                              <option value="1h">A cada 1 hora</option>
+                            </select>
+                          </div>
+
+                          <button 
+                            disabled={!alertForm.targetPrice || isNaN(parseFloat(alertForm.targetPrice))}
+                            onClick={() => addAlert(
+                              stock.symbol, 
+                              parseFloat(alertForm.targetPrice), 
+                              alertForm.condition,
+                              alertForm.targetVolume ? parseFloat(alertForm.targetVolume) : undefined,
+                              alertForm.volumeCondition,
+                              alertForm.frequency
+                            )}
+                            className="w-full py-2 bg-blue-600 text-white rounded-xl text-sm font-bold shadow-md hover:bg-blue-700 disabled:opacity-50 transition-all flex items-center justify-center gap-2"
+                          >
+                            <Plus className="w-4 h-4" /> Criar Alerta Complexo
+                          </button>
                         </div>
                       </div>
                     )}
@@ -1439,7 +1863,14 @@ export default function App() {
                   <button
                     onClick={() => {
                       if (sidebarSymbolInput) {
-                        setAlertForm({ symbol: sidebarSymbolInput, targetPrice: '', condition: 'above' });
+                        setAlertForm({ 
+                          symbol: sidebarSymbolInput, 
+                          targetPrice: '', 
+                          condition: 'above',
+                          targetVolume: '',
+                          volumeCondition: 'above',
+                          frequency: '1m'
+                        });
                         setSidebarSymbolInput('');
                       }
                     }}
@@ -1459,39 +1890,92 @@ export default function App() {
                         <X className="w-4 h-4 text-blue-400" />
                       </button>
                     </div>
-                    <div className="space-y-3">
-                      <div className="flex gap-2">
-                        <button 
-                          onClick={() => setAlertForm({ ...alertForm, condition: 'above' })}
-                          className={cn(
-                            "flex-1 py-1.5 text-xs font-bold rounded-lg border",
-                            alertForm.condition === 'above' ? "bg-blue-600 text-white border-blue-600" : "bg-white text-blue-600 border-blue-200"
-                          )}
-                        >Acima</button>
-                        <button 
-                          onClick={() => setAlertForm({ ...alertForm, condition: 'below' })}
-                          className={cn(
-                            "flex-1 py-1.5 text-xs font-bold rounded-lg border",
-                            alertForm.condition === 'below' ? "bg-rose-600 text-white border-rose-600" : "bg-white text-rose-600 border-rose-200"
-                          )}
-                        >Abaixo</button>
-                      </div>
-                      <div className="flex gap-2">
-                        <input 
-                          type="number"
-                          step="0.01"
-                          placeholder="Preço Alvo"
-                          value={alertForm.targetPrice}
-                          onChange={(e) => setAlertForm({ ...alertForm, targetPrice: e.target.value })}
-                          className="flex-1 px-3 py-2 text-sm rounded-xl border border-blue-200 outline-none"
-                        />
+                     <div className="space-y-4">
+                        <div className="space-y-1.5">
+                          <label className="text-[10px] font-black uppercase text-blue-800 tracking-wider">Condição de Preço</label>
+                          <div className="flex gap-2">
+                            <button 
+                              onClick={() => setAlertForm({ ...alertForm, condition: 'above' })}
+                              className={cn(
+                                "flex-1 py-1.5 text-xs font-bold rounded-lg border",
+                                alertForm.condition === 'above' ? "bg-blue-600 text-white border-blue-600" : "bg-white text-blue-600 border-blue-200"
+                              )}
+                            >Acima</button>
+                            <button 
+                              onClick={() => setAlertForm({ ...alertForm, condition: 'below' })}
+                              className={cn(
+                                "flex-1 py-1.5 text-xs font-bold rounded-lg border",
+                                alertForm.condition === 'below' ? "bg-rose-600 text-white border-rose-600" : "bg-white text-rose-600 border-rose-200"
+                              )}
+                            >Abaixo</button>
+                          </div>
+                          <input 
+                            type="number"
+                            step="0.01"
+                            placeholder="Preço Alvo"
+                            value={alertForm.targetPrice}
+                            onChange={(e) => setAlertForm({ ...alertForm, targetPrice: e.target.value })}
+                            className="w-full px-3 py-2 text-sm rounded-xl border border-blue-200 outline-none"
+                          />
+                        </div>
+
+                        <div className="space-y-1.5">
+                          <label className="text-[10px] font-black uppercase text-blue-800 tracking-wider">Volume (Opcional)</label>
+                          <div className="flex gap-2">
+                            <button 
+                              onClick={() => setAlertForm({ ...alertForm, volumeCondition: 'above' })}
+                              className={cn(
+                                "flex-1 py-1.5 text-xs font-bold rounded-lg border",
+                                alertForm.volumeCondition === 'above' ? "bg-blue-600 text-white border-blue-600" : "bg-white text-blue-600 border-blue-200"
+                              )}
+                            >{'>'} Vol</button>
+                            <button 
+                              onClick={() => setAlertForm({ ...alertForm, volumeCondition: 'below' })}
+                              className={cn(
+                                "flex-1 py-1.5 text-xs font-bold rounded-lg border",
+                                alertForm.volumeCondition === 'below' ? "bg-rose-600 text-white border-rose-600" : "bg-white text-rose-600 border-rose-200"
+                              )}
+                            >{'<'} Vol</button>
+                          </div>
+                          <input 
+                            type="number"
+                            placeholder="Volume Alvo"
+                            value={alertForm.targetVolume}
+                            onChange={(e) => setAlertForm({ ...alertForm, targetVolume: e.target.value })}
+                            className="w-full px-3 py-2 text-sm rounded-xl border border-blue-200 outline-none"
+                          />
+                        </div>
+
+                        <div className="space-y-1.5">
+                          <label className="text-[10px] font-black uppercase text-blue-800 tracking-wider">Frequência</label>
+                          <select 
+                            value={alertForm.frequency}
+                            onChange={(e) => setAlertForm({ ...alertForm, frequency: e.target.value as any })}
+                            className="w-full px-3 py-2 text-sm rounded-xl border border-blue-200 outline-none bg-white font-bold"
+                          >
+                            <option value="1m">1 minuto</option>
+                            <option value="5m">5 minutos</option>
+                            <option value="15m">15 minutos</option>
+                            <option value="30m">30 minutos</option>
+                            <option value="1h">1 hora</option>
+                          </select>
+                        </div>
+
                         <button 
                           disabled={!alertForm.targetPrice}
-                          onClick={() => addAlert(alertForm.symbol, parseFloat(alertForm.targetPrice), alertForm.condition)}
-                          className="px-4 bg-blue-600 text-white rounded-xl"
-                        ><Plus className="w-4 h-4" /></button>
+                          onClick={() => addAlert(
+                            alertForm.symbol, 
+                            parseFloat(alertForm.targetPrice), 
+                            alertForm.condition,
+                            alertForm.targetVolume ? parseFloat(alertForm.targetVolume) : undefined,
+                            alertForm.volumeCondition,
+                            alertForm.frequency
+                          )}
+                          className="w-full py-2.5 bg-blue-600 text-white rounded-xl text-sm font-bold shadow-md hover:bg-blue-700 disabled:opacity-50 transition-all flex items-center justify-center gap-2"
+                        >
+                          <Plus className="w-4 h-4" /> Criar Alerta
+                        </button>
                       </div>
-                    </div>
                  </div>
               )}
 
@@ -1523,14 +2007,24 @@ export default function App() {
                        </button>
                     </div>
                     
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
                       <div className={cn(
                         "text-xs font-bold px-2 py-0.5 rounded",
                         alert.condition === 'above' ? "bg-blue-100 text-blue-700" : "bg-rose-100 text-rose-700"
                       )}>
-                        {alert.condition === 'above' ? 'Acima' : 'Abaixo'}
+                        Price {alert.condition === 'above' ? '≥' : '≤'} R$ {alert.targetPrice.toFixed(2)}
                       </div>
-                      <span className="text-lg font-black tracking-tighter">R$ {alert.targetPrice.toFixed(2)}</span>
+                      {alert.targetVolume && (
+                        <div className={cn(
+                          "text-xs font-bold px-2 py-0.5 rounded",
+                          alert.volumeCondition === 'above' ? "bg-blue-100 text-blue-700" : "bg-rose-100 text-rose-700"
+                        )}>
+                          Vol {alert.volumeCondition === 'above' ? '≥' : '≤'} {(alert.targetVolume / 1e6).toFixed(1)}M
+                        </div>
+                      )}
+                      <div className="text-[10px] font-black text-gray-400 bg-gray-100 px-2 py-0.5 rounded uppercase">
+                         {alert.frequency}
+                      </div>
                     </div>
 
                     {alert.isTriggered ? (
