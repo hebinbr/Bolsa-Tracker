@@ -37,7 +37,9 @@ import {
   Newspaper,
   ExternalLink,
   Clock,
-  Building
+  Building,
+  Sun,
+  Moon
 } from 'lucide-react';
 import { cn } from './lib/utils';
 import { calculateSMA, calculateRSI, calculateMACD, calculateBollingerBands, calculateStochastic } from './lib/calculations';
@@ -128,6 +130,10 @@ export default function App() {
   const [stocksData, setStocksData] = useState<StockData[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [darkMode, setDarkMode] = useState<boolean>(() => {
+    const saved = localStorage.getItem('bolsa-tracker-dark-mode');
+    return saved === 'true';
+  });
   const [showTechnical, setShowTechnical] = useState(false);
   const [indicatorSettings, setIndicatorSettings] = useState({
     showSMA: false,
@@ -196,6 +202,10 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem('bolsa-tracker-alerts', JSON.stringify(alerts));
   }, [alerts]);
+
+  useEffect(() => {
+    localStorage.setItem('bolsa-tracker-dark-mode', JSON.stringify(darkMode));
+  }, [darkMode]);
 
   const fetchStockSpecificNews = useCallback(async (symbol: string) => {
     setStockNewsLoading(true);
@@ -350,56 +360,105 @@ export default function App() {
   const fetchTop10 = useCallback(async () => {
     setTop10Loading(true);
     setTop10Error(null);
+    
+    const targetUrl = `https://brapi.dev/api/quote/list?sortBy=volume&sortOrder=desc&limit=10&token=${BRAPI_TOKEN}`;
+    let result: any = null;
+    let success = false;
+
+    // Strategy 1: Direct Fetch
     try {
-      // Usando o endpoint de listagem com ordenação por volume para pegar as "maiores" (mais movimentadas)
-      const response = await fetch(
-        `https://brapi.dev/api/quote/list?sortBy=volume&sortOrder=desc&limit=10&token=${BRAPI_TOKEN}`
-      );
-      const result = await response.json();
-      
-      const stocksList = result.stocks || result.results || (Array.isArray(result) ? result : null);
-
-      if (!response.ok || result.error || !stocksList) {
-        let msg = result.message || `Erro na API (Status: ${response.status})`;
-        if (response.status === 429 || msg.toLowerCase().includes('quota') || msg.toLowerCase().includes('limit')) {
-          msg = 'Limite de requisições atingido. Tente novamente em alguns minutos.';
+      const response = await fetch(targetUrl);
+      if (response.ok) {
+        result = await response.json();
+        success = true;
+      } else {
+        const errData = await response.json().catch(() => ({}));
+        if (response.status === 429) {
+          setTop10Error('Limite de requisições atingido. Tente em instantes.');
+          setTop10Loading(false);
+          return;
         }
-        console.error('API Error (Top10):', msg);
-        setTop10Error(msg);
-        setTop10Data([]);
-        return;
       }
+    } catch (e) {
+      console.warn('Direct fetch for Top10 failed, trying proxy...');
+    }
 
-      if (stocksList) {
-        // No endpoint de lista, os campos podem ter nomes ligeiramente diferentes ou estar em 'stocks'
-        const formattedData: StockData[] = stocksList.map((s: any) => ({
-          symbol: s.stock || s.symbol || '',
-          shortName: s.name || s.shortName || s.longName || '',
-          longName: s.name || s.longName || s.shortName || '',
-          regularMarketPrice: s.close || s.regularMarketPrice || 0,
-          regularMarketChange: s.change || s.regularMarketChange || 0,
-          regularMarketChangePercent: s.change || s.regularMarketChangePercent || 0,
-          regularMarketTime: new Date().toISOString(),
-          regularMarketDayHigh: s.close || s.regularMarketDayHigh || 0,
-          regularMarketDayLow: s.close || s.regularMarketDayLow || 0,
-          regularMarketVolume: s.volume || s.regularMarketVolume || 0,
-          priceEarnings: s.priceEarnings,
-          marketCap: s.marketCap,
-          dividendYield: s.dividendYield,
-          historicalDataPrice: []
-        }));
-        setTop10Data(formattedData.filter(s => s.symbol !== ''));
+    // Strategy 2: Proxy Fallback (corsproxy.io)
+    if (!success) {
+      try {
+        const proxyUrl = `https://corsproxy.io/?url=${encodeURIComponent(targetUrl)}`;
+        const response = await fetch(proxyUrl);
+        if (response.ok) {
+          result = await response.json();
+          success = true;
+        }
+      } catch (e) {
+        console.warn('Proxy fetch for Top10 failed.');
+      }
+    }
+
+    // Strategy 3: Proxy Fallback (allorigins)
+    if (!success) {
+      try {
+        const allOriginsUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(targetUrl)}`;
+        const response = await fetch(allOriginsUrl);
+        if (response.ok) {
+          const data = await response.json();
+          result = JSON.parse(data.contents);
+          success = true;
+        }
+      } catch (e) {
+        console.warn('Allorigins fetch for Top10 failed.');
+      }
+    }
+
+    if (success && result) {
+      const stocksList = result.stocks || result.results || (Array.isArray(result) ? result : null);
+      
+      if (stocksList && Array.isArray(stocksList)) {
+        const formattedData: StockData[] = stocksList.map((s: any) => {
+          // Normalização agressiva para diferentes formatos da Brapi
+          const symbol = s.stock || s.symbol || '';
+          const name = s.name || s.shortName || s.longName || symbol;
+          const price = s.close || s.regularMarketPrice || s.price || 0;
+          const changePercent = s.change !== undefined ? s.change : (s.regularMarketChangePercent || 0);
+
+          return {
+            symbol,
+            shortName: name,
+            longName: s.longName || name,
+            regularMarketPrice: price,
+            regularMarketChange: s.regularMarketChange || 0,
+            regularMarketChangePercent: changePercent,
+            regularMarketTime: new Date().toISOString(),
+            regularMarketDayHigh: s.high || s.regularMarketDayHigh || price,
+            regularMarketDayLow: s.low || s.regularMarketDayLow || price,
+            regularMarketVolume: s.volume || s.regularMarketVolume || 0,
+            priceEarnings: s.priceEarnings,
+            marketCap: s.marketCap,
+            dividendYield: s.dividendYield,
+            historicalDataPrice: []
+          };
+        });
+        
+        const valid = formattedData.filter(s => s.symbol !== '');
+        if (valid.length > 0) {
+          setTop10Data(valid);
+        } else {
+          setTop10Data([]);
+          setTop10Error('Dados recebidos em formato inesperado.');
+        }
       } else {
         setTop10Data([]);
+        if (!top10Error) setTop10Error('Nenhum dado retornado pela API.');
       }
-    } catch (err) {
-      console.error('Erro ao buscar Top 10:', err);
-      setTop10Error('Ocorreu um erro ao conectar com o servidor.');
+    } else {
+      if (!top10Error) setTop10Error('Não foi possível conectar com o servidor (Top10).');
       setTop10Data([]);
-    } finally {
-      setTop10Loading(false);
     }
-  }, []);
+    
+    setTop10Loading(false);
+  }, [top10Error]);
 
   const fetchFiiData = useCallback(async (selectedRange: string) => {
     setFiiLoading(true);
@@ -803,26 +862,40 @@ export default function App() {
   const chartData = getChartData();
 
   return (
-    <div className="min-h-screen bg-[#F5F5F5] text-[#1A1A1A] font-sans selection:bg-blue-100">
+    <div className={cn(
+      "min-h-screen transition-colors duration-300 font-sans selection:bg-blue-100",
+      darkMode ? "bg-[#0A0A0A] text-gray-100" : "bg-[#F5F5F5] text-[#1A1A1A]"
+    )}>
       {/* Header */}
-      <header className="bg-white border-b border-gray-200 sticky top-0 z-10">
+      <header className={cn(
+        "border-b sticky top-0 z-10 transition-colors duration-300",
+        darkMode ? "bg-[#111] border-gray-800" : "bg-white border-gray-200"
+      )}>
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <div className="bg-blue-600 p-1.5 rounded-lg">
               <Activity className="w-5 h-5 text-white" />
             </div>
-            <h1 className="text-xl font-bold tracking-tight hidden sm:block">Bolsa Tracker</h1>
+            <h1 className={cn("text-xl font-bold tracking-tight hidden sm:block", darkMode ? "text-white" : "text-gray-900")}>Bolsa Tracker</h1>
           </div>
 
           <form onSubmit={handleSearch} className="flex-1 max-w-md mx-4">
             <div className="relative group">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 group-focus-within:text-blue-600 transition-colors" />
+              <Search className={cn(
+                "absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 transition-colors",
+                darkMode ? "text-gray-500 group-focus-within:text-blue-400" : "text-gray-400 group-focus-within:text-blue-600"
+              )} />
               <input
                 type="text"
                 value={searchInput}
                 onChange={(e) => setSearchInput(e.target.value)}
                 placeholder="Ativos (ex: PETR4, HGLG11, VALE3)..."
-                className="w-full bg-gray-100 border-transparent focus:bg-white focus:border-blue-600 focus:ring-4 focus:ring-blue-100 rounded-xl py-2 pl-10 pr-10 text-sm transition-all outline-none"
+                className={cn(
+                  "w-full rounded-xl py-2 pl-10 pr-10 text-sm transition-all outline-none border-transparent",
+                  darkMode 
+                    ? "bg-gray-900 text-white placeholder-gray-500 focus:bg-[#111] focus:border-blue-500 focus:ring-4 focus:ring-blue-900/30" 
+                    : "bg-gray-100 text-[#121212] focus:bg-white focus:border-blue-600 focus:ring-4 focus:ring-blue-100"
+                )}
               />
               <button 
                 type="submit"
@@ -834,31 +907,54 @@ export default function App() {
             </div>
           </form>
 
-          <button 
-            onClick={() => {
-              if ("Notification" in window && Notification.permission === "default") {
-                Notification.requestPermission();
-              }
-              setShowAlertPanel(!showAlertPanel);
-            }}
-            className={cn(
-              "p-2 hover:bg-gray-100 rounded-full transition-colors relative",
-              alerts.some(a => a.isActive && !a.isTriggered) && "text-blue-600"
-            )}
-          >
-            <Bell className="w-5 h-5 text-gray-600" />
-            {alerts.some(a => a.isActive && !a.isTriggered) && (
-              <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-blue-600 rounded-full border-2 border-white" />
-            )}
-          </button>
+          <div className="flex items-center gap-1 sm:gap-2">
+            <button
+              onClick={() => setDarkMode(!darkMode)}
+              className={cn(
+                "p-2 rounded-full transition-colors",
+                darkMode ? "hover:bg-gray-800 text-yellow-400" : "hover:bg-gray-100 text-gray-500"
+              )}
+            >
+              {darkMode ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
+            </button>
 
-          <button 
-            onClick={() => fetchAllData(tickers, range)}
-            disabled={loading}
-            className="p-2 hover:bg-gray-100 rounded-full transition-colors disabled:opacity-50"
-          >
-            <RefreshCw className={cn("w-5 h-5 text-gray-600", loading && "animate-spin")} />
-          </button>
+            <button 
+              onClick={() => {
+                if ("Notification" in window && Notification.permission === "default") {
+                  Notification.requestPermission();
+                }
+                setShowAlertPanel(!showAlertPanel);
+              }}
+              className={cn(
+                "p-2 rounded-full transition-colors relative",
+                darkMode ? "hover:bg-gray-800" : "hover:bg-gray-100",
+                alerts.some(a => a.isActive && !a.isTriggered) && (darkMode ? "text-blue-400" : "text-blue-600")
+              )}
+            >
+              <Bell className={cn("w-5 h-5", darkMode ? "text-gray-400" : "text-gray-600")} />
+              {alerts.some(a => a.isActive && !a.isTriggered) && (
+                <span className={cn(
+                  "absolute top-1.5 right-1.5 w-2 h-2 rounded-full border-2",
+                  darkMode ? "bg-blue-500 border-[#111]" : "bg-blue-600 border-white"
+                )} />
+              )}
+            </button>
+
+            <button 
+              onClick={() => {
+                fetchAllData(tickers, range);
+                fetchTop10();
+                fetchFiiData(fiiRange);
+              }}
+              disabled={loading}
+              className={cn(
+                "p-2 rounded-full transition-colors disabled:opacity-50",
+                darkMode ? "hover:bg-gray-800" : "hover:bg-gray-100"
+              )}
+            >
+              <RefreshCw className={cn("w-5 h-5", darkMode ? "text-gray-400" : "text-gray-600", loading && "animate-spin")} />
+            </button>
+          </div>
         </div>
       </header>
 
@@ -878,12 +974,15 @@ export default function App() {
           <div className="flex gap-4 overflow-x-auto pb-4 no-scrollbar -mx-4 px-4 sm:mx-0 sm:px-0">
             <AnimatePresence mode="popLayout">
               {top10Error ? (
-                <div className="flex-shrink-0 w-full bg-white border border-red-100 rounded-2xl p-4 flex flex-col items-center justify-center gap-3 text-center">
+                <div className={cn(
+                  "flex-shrink-0 w-full border rounded-2xl p-4 flex flex-col items-center justify-center gap-3 text-center transition-all duration-300",
+                  darkMode ? "bg-[#111] border-red-900/30" : "bg-white border-red-100"
+                )}>
                   <div className="flex items-center gap-2 text-red-600 font-bold text-xs uppercase">
                     <AlertCircle className="w-4 h-4" />
                     Erro ao carregar
                   </div>
-                  <p className="text-[10px] text-gray-500 max-w-[200px]">{top10Error}</p>
+                  <p className="text-[10px] text-gray-400 max-w-[200px]">{top10Error}</p>
                   <button 
                     onClick={() => fetchTop10()}
                     className="px-4 py-1.5 bg-blue-600 text-white rounded-xl text-[10px] font-black uppercase shadow-md hover:bg-blue-700 transition-all flex items-center gap-2"
@@ -893,7 +992,10 @@ export default function App() {
                 </div>
               ) : top10Loading ? (
                 Array.from({ length: 6 }).map((_, i) => (
-                  <div key={i} className="flex-shrink-0 w-[160px] h-[94px] bg-white border border-gray-100 rounded-2xl animate-pulse" />
+                  <div key={i} className={cn(
+                    "flex-shrink-0 w-[160px] h-[94px] border rounded-2xl animate-pulse transition-all duration-300",
+                    darkMode ? "bg-[#111] border-gray-800" : "bg-white border-gray-100"
+                  )} />
                 ))
               ) : top10Data.length > 0 ? (
                 top10Data.map((stock) => {
@@ -906,28 +1008,39 @@ export default function App() {
                       initial={{ opacity: 0, y: 10 }}
                       animate={{ opacity: 1, y: 0 }}
                       className={cn(
-                        "flex-shrink-0 bg-white border rounded-2xl p-4 shadow-sm transition-all text-left min-w-[160px] relative group/top",
-                        isTracked ? "border-blue-400 ring-2 ring-blue-50" : "border-gray-100 hover:border-blue-200 hover:shadow-md"
+                        "flex-shrink-0 border rounded-2xl p-4 shadow-sm transition-all duration-300 text-left min-w-[160px] relative group/top",
+                        darkMode 
+                          ? (isTracked ? "bg-[#111] border-blue-500/50 ring-2 ring-blue-900/20" : "bg-[#111] border-gray-800 hover:border-gray-700")
+                          : (isTracked ? "bg-white border-blue-400 ring-2 ring-blue-50" : "bg-white border-gray-100 hover:border-blue-200 hover:shadow-md")
                       )}
                     >
                       <button 
                         onClick={() => addToComparison(stock.symbol)}
                         className="flex flex-col gap-1 w-full"
                       >
-                        <span className="text-xs font-black text-blue-600 uppercase tracking-tighter">{stock.symbol}</span>
+                        <span className={cn(
+                          "text-xs font-black uppercase tracking-tighter transition-colors",
+                          darkMode ? "text-blue-400" : "text-blue-600"
+                        )}>{stock.symbol}</span>
                         <div className="flex items-baseline gap-2">
-                          <span className="text-base font-black text-gray-900 tracking-tighter">
+                          <span className={cn(
+                            "text-base font-black tracking-tighter transition-colors",
+                            darkMode ? "text-white" : "text-gray-900"
+                          )}>
                             R$ {stock.regularMarketPrice.toFixed(2)}
                           </span>
                         </div>
                         {stock.regularMarketVolume && (
-                          <div className="text-[9px] font-black text-gray-400 uppercase tracking-tight flex items-center gap-1 opacity-60">
+                          <div className={cn(
+                            "text-[9px] font-black uppercase tracking-tight flex items-center gap-1 opacity-60 transition-colors",
+                            darkMode ? "text-gray-400" : "text-gray-400"
+                          )}>
                              Vol: {(stock.regularMarketVolume / 1e6).toFixed(1)}M
                           </div>
                         )}
                         <div className={cn(
-                          "text-[10px] font-black flex items-center gap-0.5 mt-0.5",
-                          isPositive ? "text-emerald-600" : "text-rose-600"
+                          "text-[10px] font-black flex items-center gap-0.5 mt-0.5 transition-colors",
+                          isPositive ? "text-emerald-500" : "text-rose-500"
                         )}>
                           {isPositive ? <ArrowUpRight className="w-3 h-3" /> : <ArrowDownRight className="w-3 h-3" />}
                           {stock.regularMarketChangePercent.toFixed(2)}%
@@ -935,7 +1048,10 @@ export default function App() {
                       </button>
                       <button 
                         onClick={() => setSelectedStock(stock)}
-                        className="absolute top-2 right-2 p-1.5 text-gray-300 hover:text-blue-500 hover:bg-blue-50 rounded-lg transition-all opacity-0 group-hover/top:opacity-100"
+                        className={cn(
+                          "absolute top-2 right-2 p-1.5 rounded-lg transition-all opacity-0 group-hover/top:opacity-100",
+                          darkMode ? "text-gray-500 hover:text-blue-400 hover:bg-gray-800" : "text-gray-300 hover:text-blue-500 hover:bg-blue-50"
+                        )}
                         title="Ver detalhes"
                       >
                         <AlertCircle className="w-4 h-4" />
@@ -944,7 +1060,10 @@ export default function App() {
                   );
                 })
               ) : (
-                <div className="flex-shrink-0 w-full bg-white border border-dashed border-gray-200 rounded-2xl p-4 flex flex-col items-center justify-center gap-2 text-center h-[94px]">
+                <div className={cn(
+                  "flex-shrink-0 w-full border border-dashed rounded-2xl p-4 flex flex-col items-center justify-center gap-2 text-center h-[94px] transition-all duration-300",
+                  darkMode ? "bg-[#111] border-gray-800" : "bg-white border-gray-100"
+                )}>
                   <p className="text-[10px] text-gray-400 font-medium">Nenhum dado das mais negociadas disponível no momento.</p>
                 </div>
               )}
@@ -1233,7 +1352,10 @@ export default function App() {
               <p className="text-[10px] text-gray-400 italic leading-relaxed">Média Móvel Convergente/Divergente. Oscilador 12/26/9.</p>
             </div>
 
-            <div className="space-y-4 p-4 border border-gray-50 rounded-xl">
+            <div className={cn(
+              "space-y-4 p-4 border rounded-xl transition-colors",
+              darkMode ? "border-gray-800" : "border-gray-50"
+            )}>
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
                   <input 
@@ -1243,20 +1365,39 @@ export default function App() {
                     onChange={(e) => setIndicatorSettings(prev => ({ ...prev, showBollinger: e.target.checked }))}
                     className="w-4 h-4 rounded text-blue-600 focus:ring-blue-500"
                   />
-                  <label htmlFor="bbToggle" className="text-sm font-bold text-gray-700">Bandas Bollinger</label>
+                  <label htmlFor="bbToggle" className={cn("text-sm font-bold transition-colors", darkMode ? "text-gray-300" : "text-gray-700")}>Bandas Bollinger</label>
                 </div>
                 {indicatorSettings.showBollinger && (
                   <div className="flex items-center gap-1.5 text-[10px] font-bold text-gray-500">
-                    <input type="number" value={indicatorSettings.bollingerPeriod} onChange={(e) => setIndicatorSettings(prev => ({ ...prev, bollingerPeriod: parseInt(e.target.value) || 1 }))} className="w-10 px-1 py-0.5 border border-gray-200 rounded" />
+                    <input 
+                      type="number" 
+                      value={indicatorSettings.bollingerPeriod} 
+                      onChange={(e) => setIndicatorSettings(prev => ({ ...prev, bollingerPeriod: parseInt(e.target.value) || 1 }))} 
+                      className={cn(
+                        "w-10 px-1 py-0.5 border rounded outline-none",
+                        darkMode ? "bg-gray-900 border-gray-700 text-white" : "bg-white border-gray-200"
+                      )} 
+                    />
                     <span>σ</span>
-                    <input type="number" value={indicatorSettings.bollingerStdDev} onChange={(e) => setIndicatorSettings(prev => ({ ...prev, bollingerStdDev: parseInt(e.target.value) || 1 }))} className="w-8 px-1 py-0.5 border border-gray-200 rounded" />
+                    <input 
+                      type="number" 
+                      value={indicatorSettings.bollingerStdDev} 
+                      onChange={(e) => setIndicatorSettings(prev => ({ ...prev, bollingerStdDev: parseInt(e.target.value) || 1 }))} 
+                      className={cn(
+                        "w-8 px-1 py-0.5 border rounded outline-none",
+                        darkMode ? "bg-gray-900 border-gray-700 text-white" : "bg-white border-gray-200"
+                      )} 
+                    />
                   </div>
                 )}
               </div>
               <p className="text-[10px] text-gray-400 italic leading-relaxed">Bandas de Bollinger. Volatilidade e Médias.</p>
             </div>
 
-            <div className="space-y-4 p-4 border border-gray-50 rounded-xl">
+            <div className={cn(
+              "space-y-4 p-4 border rounded-xl transition-colors",
+              darkMode ? "border-gray-800" : "border-gray-50"
+            )}>
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
                   <input 
@@ -1266,12 +1407,28 @@ export default function App() {
                     onChange={(e) => setIndicatorSettings(prev => ({ ...prev, showStochastic: e.target.checked }))}
                     className="w-4 h-4 rounded text-blue-600 focus:ring-blue-500"
                   />
-                  <label htmlFor="stochToggle" className="text-sm font-bold text-gray-700">Estocástico</label>
+                  <label htmlFor="stochToggle" className={cn("text-sm font-bold transition-colors", darkMode ? "text-gray-300" : "text-gray-700")}>Estocástico</label>
                 </div>
                 {indicatorSettings.showStochastic && (
                   <div className="flex items-center gap-1.5">
-                    <input type="number" value={indicatorSettings.stochasticK} onChange={(e) => setIndicatorSettings(prev => ({ ...prev, stochasticK: parseInt(e.target.value) || 1 }))} className="w-10 px-1 py-0.5 text-[10px] border border-gray-200 rounded" />
-                    <input type="number" value={indicatorSettings.stochasticD} onChange={(e) => setIndicatorSettings(prev => ({ ...prev, stochasticD: parseInt(e.target.value) || 1 }))} className="w-10 px-1 py-0.5 text-[10px] border border-gray-200 rounded" />
+                    <input 
+                      type="number" 
+                      value={indicatorSettings.stochasticK} 
+                      onChange={(e) => setIndicatorSettings(prev => ({ ...prev, stochasticK: parseInt(e.target.value) || 1 }))} 
+                      className={cn(
+                        "w-10 px-1 py-0.5 text-[10px] border rounded outline-none",
+                        darkMode ? "bg-gray-900 border-gray-700 text-white" : "bg-white border-gray-200"
+                      )} 
+                    />
+                    <input 
+                      type="number" 
+                      value={indicatorSettings.stochasticD} 
+                      onChange={(e) => setIndicatorSettings(prev => ({ ...prev, stochasticD: parseInt(e.target.value) || 1 }))} 
+                      className={cn(
+                        "w-10 px-1 py-0.5 text-[10px] border rounded outline-none",
+                        darkMode ? "bg-gray-900 border-gray-700 text-white" : "bg-white border-gray-200"
+                      )} 
+                    />
                   </div>
                 )}
               </div>
@@ -1281,14 +1438,20 @@ export default function App() {
         )}
 
         {error && (
-          <div className="mb-6 p-4 bg-red-50 border border-red-100 rounded-xl flex items-center justify-between gap-3 text-red-700 animate-in fade-in slide-in-from-top-2">
+          <div className={cn(
+            "mb-6 p-4 border rounded-xl flex items-center justify-between gap-3 animate-in fade-in slide-in-from-top-2",
+            darkMode ? "bg-red-900/10 border-red-900/30 text-red-400" : "bg-red-50 border-red-100 text-red-700"
+          )}>
             <div className="flex items-center gap-3">
               <AlertCircle className="w-5 h-5 shrink-0" />
               <p className="text-sm font-medium">{error}</p>
             </div>
             <button 
               onClick={() => fetchAllData(tickers, range)}
-              className="px-3 py-1 bg-white border border-red-200 rounded-lg text-[10px] font-black uppercase hover:bg-red-100 transition-colors shadow-sm whitespace-nowrap"
+              className={cn(
+                "px-3 py-1 border rounded-lg text-[10px] font-black uppercase transition-all shadow-sm whitespace-nowrap",
+                darkMode ? "bg-gray-900 border-gray-800 hover:bg-gray-800" : "bg-white border-red-200 hover:bg-red-100"
+              )}
             >
               Tentar Novamente
             </button>
@@ -1298,19 +1461,27 @@ export default function App() {
         {stocksData.length > 0 ? (
           <div className="space-y-6">
             {/* Chart Area */}
-            <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
+            <div className={cn(
+              "rounded-2xl p-6 shadow-sm border transition-all duration-300",
+              darkMode ? "bg-[#111] border-gray-800" : "bg-white border-gray-100"
+            )}>
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
                 <div className="flex items-center gap-4">
                   <div>
-                    <h2 className="text-xl font-bold tracking-tight">Análise de Mercado</h2>
-                    <p className="text-sm text-gray-500">Visualizando dados históricos e tendências</p>
+                    <h2 className={cn("text-xl font-bold tracking-tight transition-colors", darkMode ? "text-white" : "text-gray-900")}>Análise de Mercado</h2>
+                    <p className={cn("text-sm transition-colors", darkMode ? "text-gray-500" : "text-gray-500")}>Visualizando dados históricos e tendências</p>
                   </div>
-                  <div className="hidden lg:flex items-center gap-1 bg-gray-100 p-1 rounded-xl">
+                  <div className={cn(
+                    "hidden lg:flex items-center gap-1 p-1 rounded-xl transition-colors",
+                    darkMode ? "bg-gray-900" : "bg-gray-100"
+                  )}>
                     <button
                       onClick={() => setChartType('line')}
                       className={cn(
                         "p-1.5 rounded-lg transition-all",
-                        chartType === 'line' ? "bg-white text-blue-600 shadow-sm" : "text-gray-400 hover:text-gray-600"
+                        chartType === 'line' 
+                          ? (darkMode ? "bg-blue-600 text-white" : "bg-white text-blue-600 shadow-sm") 
+                          : "text-gray-400 hover:text-gray-600"
                       )}
                       title="Gráfico de Linha"
                     >
@@ -1320,7 +1491,9 @@ export default function App() {
                       onClick={() => setChartType('candlestick')}
                       className={cn(
                         "p-1.5 rounded-lg transition-all",
-                        chartType === 'candlestick' ? "bg-white text-blue-600 shadow-sm" : "text-gray-400 hover:text-gray-600"
+                        chartType === 'candlestick' 
+                          ? (darkMode ? "bg-blue-600 text-white" : "bg-white text-blue-600 shadow-sm") 
+                          : "text-gray-400 hover:text-gray-600"
                       )}
                       title="Gráfico de Velas (Candlestick)"
                     >
@@ -1440,19 +1613,19 @@ export default function App() {
                     </LineChart>
                   ) : (
                     <ComposedChart data={chartData} syncId="main-stock-sync">
-                      <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#F0F0F0" />
+                      <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={darkMode ? "#333" : "#F0F0F0"} />
                       <XAxis 
                         dataKey="date" 
                         axisLine={false}
                         tickLine={false}
-                        tick={{ fontSize: 10, fill: '#9CA3AF' }}
+                        tick={{ fontSize: 10, fill: darkMode ? '#666' : '#9CA3AF' }}
                         dy={10}
                         minTickGap={30}
                       />
                       <YAxis 
                         axisLine={false}
                         tickLine={false}
-                        tick={{ fontSize: 10, fill: '#9CA3AF' }}
+                        tick={{ fontSize: 10, fill: darkMode ? '#666' : '#9CA3AF' }}
                         domain={['auto', 'auto']}
                         tickFormatter={(value) => `R$ ${value}`}
                       />
@@ -1461,9 +1634,10 @@ export default function App() {
                           borderRadius: '12px', 
                           border: 'none', 
                           boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)',
-                          padding: '12px'
+                          padding: '12px',
+                          backgroundColor: darkMode ? '#1A1A1A' : '#FFFFFF'
                         }}
-                        labelStyle={{ fontWeight: 'bold', marginBottom: '4px', color: '#374151' }}
+                        labelStyle={{ fontWeight: 'bold', marginBottom: '4px', color: darkMode ? '#FFFFFF' : '#374151' }}
                         labelFormatter={(label, payload) => payload[0]?.payload?.fullDate || label}
                         content={({ active, payload, label }) => {
                           if (active && payload && payload.length) {
@@ -1472,25 +1646,31 @@ export default function App() {
                             const ohlc = data[`${symbol}_OHLC`];
                             if (!ohlc) return null;
                             return (
-                              <div className="bg-white p-4 rounded-xl shadow-xl border border-gray-100 min-w-[160px]">
+                              <div className={cn(
+                                "p-4 rounded-xl shadow-xl border min-w-[160px] transition-colors",
+                                darkMode ? "bg-[#1A1A1A] border-gray-800" : "bg-white border-gray-100"
+                              )}>
                                 <p className="text-xs font-black text-gray-400 uppercase mb-2">{data.fullDate}</p>
-                                <p className="text-sm font-black text-blue-600 mb-3">{symbol}</p>
+                                <p className={cn("text-sm font-black mb-3", darkMode ? "text-blue-400" : "text-blue-600")}>{symbol}</p>
                                 <div className="space-y-1.5">
                                   <div className="flex justify-between text-xs font-bold">
                                     <span className="text-gray-400">ABERTURA</span>
-                                    <span>R$ {ohlc.open.toFixed(2)}</span>
+                                    <span className={darkMode ? "text-white" : "text-gray-900"}>R$ {ohlc.open.toFixed(2)}</span>
                                   </div>
                                   <div className="flex justify-between text-xs font-bold">
                                     <span className="text-gray-400">MÁXIMA</span>
-                                    <span className="text-emerald-600">R$ {ohlc.high.toFixed(2)}</span>
+                                    <span className="text-emerald-500">R$ {ohlc.high.toFixed(2)}</span>
                                   </div>
                                   <div className="flex justify-between text-xs font-bold">
                                     <span className="text-gray-400">MÍNIMA</span>
-                                    <span className="text-rose-600">R$ {ohlc.low.toFixed(2)}</span>
+                                    <span className="text-rose-500">R$ {ohlc.low.toFixed(2)}</span>
                                   </div>
-                                  <div className="flex justify-between text-xs font-bold pt-1 border-t border-gray-50">
+                                  <div className={cn(
+                                    "flex justify-between text-xs font-bold pt-1 border-t",
+                                    darkMode ? "border-gray-800" : "border-gray-50"
+                                  )}>
                                     <span className="text-gray-400">FECHAMENTO</span>
-                                    <span>R$ {ohlc.close.toFixed(2)}</span>
+                                    <span className={darkMode ? "text-white" : "text-gray-900"}>R$ {ohlc.close.toFixed(2)}</span>
                                   </div>
                                 </div>
                               </div>
@@ -1682,55 +1862,61 @@ export default function App() {
               {stocksData.map((stock, idx) => {
                 const isPositive = stock.regularMarketChange >= 0;
                 return (
-                  <div key={stock.symbol} className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100 flex flex-col transition-transform hover:scale-[1.02]">
-                    <div className="flex justify-between items-start mb-4">
-                      <div 
-                        className="cursor-pointer group flex-1"
-                        onClick={() => setSelectedStock(stock)}
-                      >
-                        <div className="flex items-center gap-2 mb-1">
-                          <span 
-                            className="text-xs font-bold text-white px-2 py-0.5 rounded uppercase tracking-wider group-hover:bg-opacity-90 transition-all"
-                            style={{ backgroundColor: COLORS[idx] }}
-                          >
-                            {stock.symbol}
-                          </span>
-                          <span className="text-[10px] text-gray-400 font-bold uppercase">Ver Detalhes</span>
-                        </div>
-                        <h3 className="font-bold text-gray-900 group-hover:text-blue-600 transition-colors uppercase truncate max-w-[150px]">
-                          {stock.shortName}
-                        </h3>
-                      </div>
-                      <div className="text-right flex flex-col items-end gap-2">
-                        <div>
-                          <div className="text-xl font-black tracking-tighter">
-                            R$ {stock.regularMarketPrice.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
-                          </div>
-                          <div className={cn(
-                            "flex items-center justify-end gap-0.5 font-bold text-xs",
-                            isPositive ? "text-emerald-600" : "text-rose-600"
-                          )}>
-                            {isPositive ? <ArrowUpRight className="w-3 h-3" /> : <ArrowDownRight className="w-3 h-3" />}
-                            {stock.regularMarketChangePercent.toFixed(2)}%
-                          </div>
-                        </div>
-                        <button 
-                          onClick={() => setAlertForm({ 
-                            symbol: stock.symbol, 
-                            targetPrice: stock.regularMarketPrice.toString(), 
-                            condition: 'above',
-                            useVolume: false,
-                            targetVolume: '',
-                            volumeCondition: 'above',
-                            frequency: '1m'
-                          })}
-                          className="p-1.5 bg-gray-100 text-gray-500 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-all"
-                          title="Definir alerta de preço"
-                        >
-                          <Bell className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
-                    </div>
+                   <div key={stock.symbol} className={cn(
+                     "rounded-2xl p-6 shadow-sm border flex flex-col transition-all hover:scale-[1.02]",
+                     darkMode ? "bg-[#111] border-gray-800" : "bg-white border-gray-100"
+                   )}>
+                     <div className="flex justify-between items-start mb-4">
+                       <div 
+                         className="cursor-pointer group flex-1"
+                         onClick={() => setSelectedStock(stock)}
+                       >
+                         <div className="flex items-center gap-2 mb-1">
+                           <span 
+                             className="text-xs font-bold text-white px-2 py-0.5 rounded uppercase tracking-wider group-hover:bg-opacity-90 transition-all font-mono"
+                             style={{ backgroundColor: COLORS[idx % COLORS.length] }}
+                           >
+                             {stock.symbol}
+                           </span>
+                           <span className={cn("text-[10px] font-bold uppercase transition-colors", darkMode ? "text-gray-600" : "text-gray-400")}>Ver Detalhes</span>
+                         </div>
+                         <h3 className={cn("font-bold transition-colors uppercase truncate max-w-[150px]", darkMode ? "text-white group-hover:text-blue-400" : "text-gray-900 group-hover:text-blue-600")}>
+                           {stock.shortName}
+                         </h3>
+                       </div>
+                       <div className="text-right flex flex-col items-end gap-2">
+                         <div>
+                           <div className={cn("text-xl font-black tracking-tighter transition-colors", darkMode ? "text-white" : "text-gray-900")}>
+                             R$ {stock.regularMarketPrice.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                           </div>
+                           <div className={cn(
+                             "flex items-center justify-end gap-0.5 font-bold text-xs",
+                             isPositive ? "text-emerald-500" : "text-rose-500"
+                           )}>
+                             {isPositive ? <ArrowUpRight className="w-3 h-3" /> : <ArrowDownRight className="w-3 h-3" />}
+                             {stock.regularMarketChangePercent.toFixed(2)}%
+                           </div>
+                         </div>
+                         <button 
+                           onClick={() => setAlertForm({ 
+                             symbol: stock.symbol, 
+                             targetPrice: stock.regularMarketPrice.toString(), 
+                             condition: 'above',
+                             useVolume: false,
+                             targetVolume: '',
+                             volumeCondition: 'above',
+                             frequency: '1m'
+                           })}
+                           className={cn(
+                             "p-1.5 rounded-lg transition-all",
+                             darkMode ? "bg-gray-900 text-gray-500 hover:text-blue-400 hover:bg-gray-800" : "bg-gray-100 text-gray-500 hover:text-blue-600 hover:bg-blue-50"
+                           )}
+                           title="Definir alerta de preço"
+                         >
+                           <Bell className="w-3.5 h-3.5" />
+                         </button>
+                       </div>
+                     </div>
 
                     {/* Alert Form Overlay inside Card */}
                     {alertForm?.symbol === stock.symbol && (
@@ -2076,32 +2262,47 @@ export default function App() {
       {/* Alert Management Panel */}
       {showAlertPanel && (
         <div className="fixed inset-0 z-40 overflow-hidden">
-          <div className="absolute inset-0 bg-black/20 backdrop-blur-sm" onClick={() => setShowAlertPanel(false)} />
-          <div className="absolute right-0 top-0 bottom-0 w-full max-w-sm bg-white shadow-2xl flex flex-col animate-in slide-in-from-right duration-300">
-            <div className="p-6 border-b border-gray-100 flex items-center justify-between">
+          <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => setShowAlertPanel(false)} />
+          <div className={cn(
+            "absolute right-0 top-0 bottom-0 w-full max-w-sm shadow-2xl flex flex-col animate-in slide-in-from-right duration-300 transition-colors",
+            darkMode ? "bg-[#111] text-gray-100" : "bg-white text-gray-900"
+          )}>
+            <div className={cn(
+              "p-6 border-b flex items-center justify-between transition-colors",
+              darkMode ? "border-gray-800" : "border-gray-100"
+            )}>
               <div className="flex items-center gap-2">
-                <BellRing className="w-5 h-5 text-blue-600" />
+                <BellRing className={cn("w-5 h-5", darkMode ? "text-blue-400" : "text-blue-600")} />
                 <h3 className="text-lg font-bold">Meus Alertas</h3>
               </div>
               <button 
                 onClick={() => setShowAlertPanel(false)}
-                className="p-2 hover:bg-gray-100 rounded-full transition-colors"
+                className={cn(
+                  "p-2 rounded-full transition-colors",
+                  darkMode ? "hover:bg-gray-800 text-gray-500 hover:text-gray-300" : "hover:bg-gray-100 text-gray-400"
+                )}
               >
-                <X className="w-5 h-5 text-gray-400" />
+                <X className="w-5 h-5" />
               </button>
             </div>
 
             <div className="flex-1 overflow-y-auto p-6 space-y-6">
               {/* Add New Alert by Symbol in Sidebar */}
-              <div className="bg-gray-50 p-4 rounded-2xl border border-gray-100">
-                <h4 className="text-xs font-bold text-gray-500 uppercase tracking-widest mb-3">Criar Alerta Rápido</h4>
+              <div className={cn(
+                "p-4 rounded-2xl border transition-colors",
+                darkMode ? "bg-gray-900 border-gray-800" : "bg-gray-50 border-gray-100"
+              )}>
+                <h4 className={cn("text-xs font-bold uppercase tracking-widest mb-3", darkMode ? "text-gray-500" : "text-gray-500")}>Criar Alerta Rápido</h4>
                 <div className="space-y-3">
                   <input
                     type="text"
                     placeholder="Símbolo (ex: PETR4)"
                     value={sidebarSymbolInput}
                     onChange={(e) => setSidebarSymbolInput(e.target.value.toUpperCase())}
-                    className="w-full px-3 py-2 text-sm bg-white border border-gray-200 rounded-xl focus:border-blue-500 outline-none uppercase font-bold"
+                    className={cn(
+                      "w-full px-3 py-2 text-sm border rounded-xl outline-none uppercase font-bold transition-all",
+                      darkMode ? "bg-black border-gray-800 text-white focus:border-blue-500" : "bg-white border-gray-200 focus:border-blue-500"
+                    )}
                   />
                   <button
                     onClick={() => {
@@ -2127,29 +2328,36 @@ export default function App() {
               </div>
 
               {alertForm && !stocksData.some(s => s.symbol === alertForm.symbol) && (
-                 <div className="p-4 bg-blue-50 rounded-2xl border border-blue-100 animate-in zoom-in-95">
+                 <div className={cn(
+                   "p-4 rounded-2xl border animate-in zoom-in-95 transition-colors",
+                   darkMode ? "bg-blue-900/10 border-blue-900/30" : "bg-blue-50 border-blue-100"
+                 )}>
                     <div className="flex items-center justify-between mb-4">
-                      <h4 className="text-sm font-bold text-blue-900">{alertForm.symbol}</h4>
+                      <h4 className={cn("text-sm font-bold", darkMode ? "text-blue-400" : "text-blue-900")}>{alertForm.symbol}</h4>
                       <button onClick={() => setAlertForm(null)}>
-                        <X className="w-4 h-4 text-blue-400" />
+                        <X className={cn("w-4 h-4 transition-colors", darkMode ? "text-blue-600" : "text-blue-400")} />
                       </button>
                     </div>
                      <div className="space-y-4">
                         <div className="space-y-1.5">
-                          <label className="text-[10px] font-black uppercase text-blue-800 tracking-wider">Condição de Preço</label>
-                          <div className="flex gap-2">
+                          <label className={cn("text-[10px] font-black uppercase tracking-wider transition-colors", darkMode ? "text-blue-400" : "text-blue-800")}>Condição de Preço</label>
+                          <div className={cn("flex gap-2 p-0.5 rounded-lg", darkMode ? "bg-black/50" : "bg-white/50")}>
                             <button 
                               onClick={() => setAlertForm({ ...alertForm, condition: 'above' })}
                               className={cn(
-                                "flex-1 py-1.5 text-xs font-bold rounded-lg border",
-                                alertForm.condition === 'above' ? "bg-blue-600 text-white border-blue-600" : "bg-white text-blue-600 border-blue-200"
+                                "flex-1 py-1.5 text-xs font-bold rounded-lg border transition-all",
+                                alertForm.condition === 'above' 
+                                  ? "bg-blue-600 text-white border-blue-600" 
+                                  : (darkMode ? "bg-transparent text-gray-500 border-transparent hover:bg-gray-800" : "bg-white text-blue-600 border-blue-200")
                               )}
                             >Acima</button>
                             <button 
                               onClick={() => setAlertForm({ ...alertForm, condition: 'below' })}
                               className={cn(
-                                "flex-1 py-1.5 text-xs font-bold rounded-lg border",
-                                alertForm.condition === 'below' ? "bg-rose-600 text-white border-rose-600" : "bg-white text-rose-600 border-rose-200"
+                                "flex-1 py-1.5 text-xs font-bold rounded-lg border transition-all",
+                                alertForm.condition === 'below' 
+                                  ? "bg-rose-600 text-white border-rose-600" 
+                                  : (darkMode ? "bg-transparent text-gray-500 border-transparent hover:bg-gray-800" : "bg-white text-rose-600 border-rose-200")
                               )}
                             >Abaixo</button>
                           </div>
@@ -2159,18 +2367,23 @@ export default function App() {
                             placeholder="Preço Alvo"
                             value={alertForm.targetPrice}
                             onChange={(e) => setAlertForm({ ...alertForm, targetPrice: e.target.value })}
-                            className="w-full px-3 py-2 text-sm rounded-xl border border-blue-200 outline-none"
+                            className={cn(
+                              "w-full px-3 py-2 text-sm rounded-xl outline-none font-bold transition-all",
+                              darkMode ? "bg-black border-gray-800 text-white focus:border-blue-500" : "bg-white border-blue-200 focus:border-blue-500 ring-2 ring-blue-50"
+                            )}
                           />
                         </div>
 
                         <div className="space-y-1.5">
                           <div className="flex items-center justify-between">
-                            <label className="text-[10px] font-black uppercase text-blue-800 tracking-wider">Volume (Opcional)</label>
+                            <label className={cn("text-[10px] font-black uppercase tracking-wider transition-colors", darkMode ? "text-blue-400" : "text-blue-800")}>Volume (Opcional)</label>
                             <button 
                               onClick={() => setAlertForm({ ...alertForm, useVolume: !alertForm.useVolume })}
                               className={cn(
                                 "text-[10px] font-bold px-2 py-0.5 rounded transition-all",
-                                alertForm.useVolume ? "bg-blue-600 text-white" : "bg-gray-200 text-gray-500"
+                                alertForm.useVolume 
+                                  ? (darkMode ? "bg-blue-500 text-white" : "bg-blue-600 text-white") 
+                                  : (darkMode ? "bg-gray-800 text-gray-500" : "bg-gray-200 text-gray-500")
                               )}
                             >
                               {alertForm.useVolume ? 'Ativado' : 'Desativado'}
@@ -2179,19 +2392,23 @@ export default function App() {
 
                           {alertForm.useVolume && (
                             <div className="space-y-2 pt-1 animate-in slide-in-from-top-2 duration-200">
-                              <div className="flex gap-2">
+                              <div className={cn("flex gap-2 p-0.5 rounded-lg", darkMode ? "bg-black/50" : "bg-white/50")}>
                                 <button 
                                   onClick={() => setAlertForm({ ...alertForm, volumeCondition: 'above' })}
                                   className={cn(
-                                    "flex-1 py-1.5 text-xs font-bold rounded-lg border",
-                                    alertForm.volumeCondition === 'above' ? "bg-blue-600 text-white border-blue-600" : "bg-white text-blue-600 border-blue-200"
+                                    "flex-1 py-1.5 text-xs font-bold rounded-lg border transition-all",
+                                    alertForm.volumeCondition === 'above' 
+                                      ? "bg-blue-600 text-white border-blue-600" 
+                                      : (darkMode ? "bg-transparent text-gray-500 border-transparent hover:bg-gray-800" : "bg-white text-blue-600 border-blue-200")
                                   )}
                                 >Acima</button>
                                 <button 
                                   onClick={() => setAlertForm({ ...alertForm, volumeCondition: 'below' })}
                                   className={cn(
-                                    "flex-1 py-1.5 text-xs font-bold rounded-lg border",
-                                    alertForm.volumeCondition === 'below' ? "bg-rose-600 text-white border-rose-600" : "bg-white text-rose-600 border-rose-200"
+                                    "flex-1 py-1.5 text-xs font-bold rounded-lg border transition-all",
+                                    alertForm.volumeCondition === 'below' 
+                                      ? "bg-rose-600 text-white border-rose-600" 
+                                      : (darkMode ? "bg-transparent text-gray-500 border-transparent hover:bg-gray-800" : "bg-white text-rose-600 border-rose-200")
                                   )}
                                 >Abaixo</button>
                               </div>
@@ -2200,18 +2417,24 @@ export default function App() {
                                 placeholder="Volume Alvo"
                                 value={alertForm.targetVolume}
                                 onChange={(e) => setAlertForm({ ...alertForm, targetVolume: e.target.value })}
-                                className="w-full px-3 py-2 text-sm rounded-xl border border-blue-200 outline-none"
+                                className={cn(
+                                  "w-full px-3 py-2 text-sm rounded-xl outline-none font-bold transition-all",
+                                  darkMode ? "bg-black border-gray-800 text-white focus:border-blue-500" : "bg-white border-blue-200 focus:border-blue-500 ring-2 ring-blue-50"
+                                )}
                               />
                             </div>
                           )}
                         </div>
 
                         <div className="space-y-1.5">
-                          <label className="text-[10px] font-black uppercase text-blue-800 tracking-wider">Frequência</label>
+                          <label className={cn("text-[10px] font-black uppercase tracking-wider transition-colors", darkMode ? "text-blue-400" : "text-blue-800")}>Frequência</label>
                           <select 
                             value={alertForm.frequency}
                             onChange={(e) => setAlertForm({ ...alertForm, frequency: e.target.value as any })}
-                            className="w-full px-3 py-2 text-sm rounded-xl border border-blue-200 outline-none bg-white font-bold"
+                            className={cn(
+                              "w-full px-3 py-2 text-sm rounded-xl outline-none font-bold transition-all",
+                              darkMode ? "bg-black border-gray-800 text-white" : "bg-white border-blue-200"
+                            )}
                           >
                             <option value="1m">1 minuto</option>
                             <option value="5m">5 minutos</option>
@@ -2240,11 +2463,11 @@ export default function App() {
               )}
 
               <div className="space-y-4">
-                <h4 className="text-xs font-bold text-gray-500 uppercase tracking-widest">Alertas Ativos</h4>
+                <h4 className={cn("text-xs font-bold uppercase tracking-widest", darkMode ? "text-gray-500" : "text-gray-500")}>Alertas Ativos</h4>
                 {alerts.length === 0 ? (
                   <div className="text-center py-12">
-                    <Bell className="w-12 h-12 text-gray-200 mx-auto mb-4" />
-                    <p className="text-gray-500 text-sm">Você ainda não definiu nenhum alerta de preço.</p>
+                    <Bell className={cn("w-12 h-12 mx-auto mb-4", darkMode ? "text-gray-800" : "text-gray-200")} />
+                    <p className={cn("text-sm", darkMode ? "text-gray-500" : "text-gray-500")}>Você ainda não definiu nenhum alerta de preço.</p>
                   </div>
                 ) : (
                   alerts.sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map(alert => (
@@ -2253,15 +2476,18 @@ export default function App() {
                       className={cn(
                         "p-4 rounded-2xl border transition-all relative overflow-hidden",
                         alert.isTriggered 
-                          ? "bg-rose-50 border-rose-100" 
-                          : "bg-white border-gray-100 hover:border-blue-200"
+                          ? (darkMode ? "bg-rose-900/20 border-rose-900/40" : "bg-rose-50 border-rose-100") 
+                          : (darkMode ? "bg-gray-900 border-gray-800 hover:border-blue-900/50" : "bg-white border-gray-100 hover:border-blue-200")
                       )}
                     >
                     <div className="flex items-center justify-between mb-2">
-                       <span className="text-sm font-bold text-gray-900">{alert.symbol}</span>
+                       <span className={cn("text-sm font-bold", darkMode ? "text-white" : "text-gray-900")}>{alert.symbol}</span>
                        <button 
                          onClick={() => removeAlert(alert.id)}
-                         className="p-1 text-gray-400 hover:text-rose-600 hover:bg-rose-50 rounded transition-all"
+                         className={cn(
+                           "p-1 rounded transition-all",
+                           darkMode ? "text-gray-600 hover:text-rose-400 hover:bg-rose-900/30" : "text-gray-400 hover:text-rose-600 hover:bg-rose-50"
+                         )}
                        >
                          <Trash2 className="w-4 h-4" />
                        </button>
@@ -2270,19 +2496,26 @@ export default function App() {
                     <div className="flex flex-wrap items-center gap-2">
                       <div className={cn(
                         "text-xs font-bold px-2 py-0.5 rounded",
-                        alert.condition === 'above' ? "bg-blue-100 text-blue-700" : "bg-rose-100 text-rose-700"
+                        alert.condition === 'above' 
+                          ? (darkMode ? "bg-blue-900/30 text-blue-400" : "bg-blue-100 text-blue-700") 
+                          : (darkMode ? "bg-rose-900/30 text-rose-400" : "bg-rose-100 text-rose-700")
                       )}>
                         Preço {alert.condition === 'above' ? '≥' : '≤'} R$ {alert.targetPrice.toFixed(2)}
                       </div>
                       {alert.targetVolume && (
                         <div className={cn(
                           "text-xs font-bold px-2 py-0.5 rounded",
-                          alert.volumeCondition === 'above' ? "bg-blue-100 text-blue-700" : "bg-rose-100 text-rose-700"
+                          alert.volumeCondition === 'above' 
+                            ? (darkMode ? "bg-blue-900/30 text-blue-400" : "bg-blue-100 text-blue-700") 
+                            : (darkMode ? "bg-rose-900/30 text-rose-400" : "bg-rose-100 text-rose-700")
                         )}>
                           Vol {alert.volumeCondition === 'above' ? '≥' : '≤'} {(alert.targetVolume / 1e6).toFixed(1)}M
                         </div>
                       )}
-                      <div className="text-[10px] font-black text-gray-400 bg-gray-100 px-2 py-0.5 rounded uppercase">
+                      <div className={cn(
+                        "text-[10px] font-black px-2 py-0.5 rounded uppercase transition-colors",
+                        darkMode ? "text-gray-400 bg-black/50" : "text-gray-400 bg-gray-100"
+                      )}>
                          {alert.frequency}
                       </div>
                     </div>
@@ -2303,7 +2536,10 @@ export default function App() {
             </div>
           </div>
 
-          <div className="p-6 bg-gray-50 border-t border-gray-100">
+          <div className={cn(
+            "p-6 border-t transition-colors",
+            darkMode ? "bg-gray-900 border-gray-800" : "bg-gray-50 border-gray-100"
+          )}>
                <p className="text-[10px] text-gray-400 font-bold uppercase text-center leading-relaxed">
                  O aplicativo verifica os preços sempre que a página é atualizada ou os dados são recarregados.
                </p>
@@ -2327,25 +2563,40 @@ export default function App() {
               initial={{ opacity: 0, scale: 0.9, y: 20 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.9, y: 20 }}
-              className="relative w-full max-w-4xl max-h-[90vh] bg-white rounded-3xl shadow-2xl overflow-hidden flex flex-col"
+              className={cn(
+                "relative w-full max-w-4xl max-h-[90vh] rounded-3xl shadow-2xl overflow-hidden flex flex-col transition-colors duration-300",
+                darkMode ? "bg-[#111] text-white" : "bg-white text-gray-900"
+              )}
             >
               {/* Modal Header */}
-              <div className="p-6 border-b border-gray-100 flex items-center justify-between bg-white sticky top-0 z-10">
+              <div className={cn(
+                "p-6 border-b flex items-center justify-between sticky top-0 z-10 transition-colors duration-300",
+                darkMode ? "bg-[#111] border-gray-800" : "bg-white border-gray-100"
+              )}>
                 <div className="flex items-center gap-4">
                   {selectedStock.logoUrl && (
-                    <img src={selectedStock.logoUrl} alt={selectedStock.symbol} className="w-12 h-12 rounded-xl object-contain bg-gray-50 p-2" />
+                    <img src={selectedStock.logoUrl} alt={selectedStock.symbol} className={cn(
+                      "w-12 h-12 rounded-xl object-contain p-2",
+                      darkMode ? "bg-gray-900 shadow-inner" : "bg-gray-50"
+                    )} />
                   )}
                   <div>
                     <div className="flex items-center gap-2">
-                      <span className="text-xs font-black text-blue-600 uppercase tracking-widest">{selectedStock.symbol}</span>
-                      <span className="text-[10px] py-0.5 px-2 bg-gray-100 text-gray-400 rounded-full font-bold uppercase tracking-wider">B3 S.A.</span>
+                      <span className={cn("text-xs font-black uppercase tracking-widest", darkMode ? "text-blue-400" : "text-blue-600")}>{selectedStock.symbol}</span>
+                      <span className={cn(
+                        "text-[10px] py-0.5 px-2 rounded-full font-bold uppercase tracking-wider transition-colors",
+                        darkMode ? "bg-gray-900 text-gray-500" : "bg-gray-100 text-gray-400"
+                      )}>B3 S.A.</span>
                     </div>
-                    <h2 className="text-xl font-black text-gray-900">{selectedStock.longName || selectedStock.shortName}</h2>
+                    <h2 className={cn("text-xl font-black transition-colors", darkMode ? "text-white" : "text-gray-900")}>{selectedStock.longName || selectedStock.shortName}</h2>
                   </div>
                 </div>
                 <button 
                   onClick={() => setSelectedStock(null)}
-                  className="p-2 hover:bg-gray-100 rounded-full transition-colors"
+                  className={cn(
+                    "p-2 rounded-full transition-colors",
+                    darkMode ? "hover:bg-gray-800" : "hover:bg-gray-100"
+                  )}
                 >
                   <X className="w-6 h-6 text-gray-400" />
                 </button>
@@ -2355,26 +2606,38 @@ export default function App() {
               <div className="flex-1 overflow-y-auto p-6 md:p-8 space-y-8">
                 {/* Statistics Grid */}
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                  <div className="p-4 bg-gray-50 rounded-2xl border border-gray-100">
+                  <div className={cn(
+                    "p-4 rounded-2xl border transition-colors",
+                    darkMode ? "bg-gray-900 border-gray-800" : "bg-gray-50 border-gray-100"
+                  )}>
                     <span className="text-[10px] uppercase font-bold text-gray-400 tracking-wider block mb-1">Preço Atual</span>
-                    <span className="text-lg font-black tracking-tighter">R$ {selectedStock.regularMarketPrice.toFixed(2)}</span>
+                    <span className={cn("text-lg font-black tracking-tighter", darkMode ? "text-white" : "text-gray-900")}>R$ {selectedStock.regularMarketPrice.toFixed(2)}</span>
                   </div>
-                  <div className="p-4 bg-gray-50 rounded-2xl border border-gray-100">
+                  <div className={cn(
+                    "p-4 rounded-2xl border transition-colors",
+                    darkMode ? "bg-gray-900 border-gray-800" : "bg-gray-50 border-gray-100"
+                  )}>
                     <span className="text-[10px] uppercase font-bold text-gray-400 tracking-wider block mb-1">Variação</span>
                     <span className={cn(
                       "text-lg font-black tracking-tighter",
-                      selectedStock.regularMarketChange >= 0 ? "text-emerald-600" : "text-rose-600"
+                      selectedStock.regularMarketChange >= 0 ? "text-emerald-500" : "text-rose-500"
                     )}>
                       {selectedStock.regularMarketChangePercent.toFixed(2)}%
                     </span>
                   </div>
-                  <div className="p-4 bg-gray-50 rounded-2xl border border-gray-100">
+                  <div className={cn(
+                    "p-4 rounded-2xl border transition-colors",
+                    darkMode ? "bg-gray-900 border-gray-800" : "bg-gray-50 border-gray-100"
+                  )}>
                     <span className="text-[10px] uppercase font-bold text-gray-400 tracking-wider block mb-1">P/L</span>
-                    <span className="text-lg font-black tracking-tighter">{selectedStock.priceEarnings?.toFixed(2) || '-'}</span>
+                    <span className={cn("text-lg font-black tracking-tighter", darkMode ? "text-white" : "text-gray-900")}>{selectedStock.priceEarnings?.toFixed(2) || '-'}</span>
                   </div>
-                  <div className="p-4 bg-gray-50 rounded-2xl border border-gray-100">
+                  <div className={cn(
+                    "p-4 rounded-2xl border transition-colors",
+                    darkMode ? "bg-gray-900 border-gray-800" : "bg-gray-50 border-gray-100"
+                  )}>
                     <span className="text-[10px] uppercase font-bold text-gray-400 tracking-wider block mb-1">Div. Yield</span>
-                    <span className="text-lg font-black tracking-tighter text-emerald-600">
+                    <span className="text-lg font-black tracking-tighter text-emerald-500 transition-colors">
                       {selectedStock.dividendYield ? `${(selectedStock.dividendYield * 100).toFixed(2)}%` : '-'}
                     </span>
                   </div>
@@ -2388,19 +2651,30 @@ export default function App() {
                         <Activity className="w-4 h-4" />
                         Perfil da Empresa
                       </h3>
-                      <p className="text-sm text-gray-600 leading-relaxed bg-blue-50/30 p-4 rounded-2xl border border-blue-100/50">
+                      <p className={cn(
+                        "text-sm leading-relaxed p-4 rounded-2xl border transition-colors",
+                        darkMode 
+                          ? "bg-gray-900 text-gray-300 border-gray-800" 
+                          : "bg-blue-50/30 text-gray-600 border-blue-100/50"
+                      )}>
                         {selectedStock.longBusinessSummary || "Nenhuma descrição detalhada disponível para esta empresa no momento."}
                       </p>
                     </div>
 
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                      <div className="flex flex-col gap-1 p-4 rounded-2xl border border-gray-100">
+                      <div className={cn(
+                        "flex flex-col gap-1 p-4 rounded-2xl border transition-colors",
+                        darkMode ? "bg-gray-900 border-gray-800" : "bg-gray-50 border-gray-100"
+                      )}>
                         <span className="text-[10px] uppercase font-bold text-gray-400 tracking-wider">Setor</span>
-                        <span className="text-sm font-bold text-gray-700">{selectedStock.sector || '-'}</span>
+                        <span className={cn("text-sm font-bold transition-colors", darkMode ? "text-gray-100" : "text-gray-700")}>{selectedStock.sector || '-'}</span>
                       </div>
-                      <div className="flex flex-col gap-1 p-4 rounded-2xl border border-gray-100">
+                      <div className={cn(
+                        "flex flex-col gap-1 p-4 rounded-2xl border transition-colors",
+                        darkMode ? "bg-gray-900 border-gray-800" : "bg-gray-50 border-gray-100"
+                      )}>
                         <span className="text-[10px] uppercase font-bold text-gray-400 tracking-wider">Indústria</span>
-                        <span className="text-sm font-bold text-gray-700">{selectedStock.industry || '-'}</span>
+                        <span className={cn("text-sm font-bold transition-colors", darkMode ? "text-gray-100" : "text-gray-700")}>{selectedStock.industry || '-'}</span>
                       </div>
                     </div>
                   </div>
@@ -2408,13 +2682,19 @@ export default function App() {
                   <div className="space-y-6">
                     <div>
                       <h3 className="text-sm font-bold text-gray-400 uppercase tracking-widest mb-3">Links e Contato</h3>
-                      <div className="bg-white rounded-2xl border border-gray-100 overflow-hidden">
+                      <div className={cn(
+                        "rounded-2xl border overflow-hidden transition-colors",
+                        darkMode ? "bg-[#0A0A0A] border-gray-800" : "bg-white border-gray-100"
+                      )}>
                         {selectedStock.website ? (
                           <a 
                             href={selectedStock.website} 
                             target="_blank" 
                             rel="noopener noreferrer"
-                            className="flex items-center justify-between p-4 hover:bg-gray-50 transition-colors text-sm font-bold text-blue-600"
+                            className={cn(
+                              "flex items-center justify-between p-4 transition-colors text-sm font-bold",
+                              darkMode ? "hover:bg-gray-900 text-blue-400" : "hover:bg-gray-50 text-blue-600"
+                            )}
                           >
                             Site Oficial
                             <ExternalLink className="w-4 h-4" />
@@ -2427,10 +2707,13 @@ export default function App() {
 
                     <div>
                       <h3 className="text-sm font-bold text-gray-400 uppercase tracking-widest mb-3">Fundamentos</h3>
-                      <div className="space-y-2 p-4 bg-gray-50 rounded-2xl border border-gray-100">
+                      <div className={cn(
+                        "space-y-2 p-4 rounded-2xl border transition-colors",
+                        darkMode ? "bg-gray-900 border-gray-800" : "bg-gray-50 border-gray-100"
+                      )}>
                         <div className="flex justify-between text-xs">
                           <span className="text-gray-400 font-bold uppercase">Cap. de Mercado</span>
-                          <span className="font-bold">
+                          <span className={cn("font-bold transition-colors", darkMode ? "text-gray-200" : "text-gray-800")}>
                             {selectedStock.marketCap 
                               ? selectedStock.marketCap >= 1e9 
                                 ? `R$ ${(selectedStock.marketCap / 1e9).toFixed(2)}B`
@@ -2440,7 +2723,7 @@ export default function App() {
                         </div>
                         <div className="flex justify-between text-xs">
                           <span className="text-gray-400 font-bold uppercase">Volume (24h)</span>
-                          <span className="font-bold">{(selectedStock.regularMarketVolume / 1e6).toFixed(1)}M</span>
+                          <span className={cn("font-bold transition-colors", darkMode ? "text-gray-200" : "text-gray-800")}>{(selectedStock.regularMarketVolume / 1e6).toFixed(1)}M</span>
                         </div>
                       </div>
                     </div>
@@ -2465,7 +2748,12 @@ export default function App() {
                           href={item.url}
                           target="_blank"
                           rel="noopener noreferrer"
-                          className="flex gap-4 p-4 rounded-2xl border border-gray-100 hover:border-blue-200 hover:bg-gray-50 transition-all group"
+                          className={cn(
+                            "flex gap-4 p-4 rounded-2xl border transition-all group",
+                            darkMode 
+                              ? "bg-gray-900 border-gray-800 hover:border-blue-900/50 hover:bg-black" 
+                              : "bg-white border-gray-100 hover:border-blue-200 hover:bg-gray-50"
+                          )}
                         >
                           {item.image && (
                             <div className="w-20 h-20 shrink-0 rounded-xl overflow-hidden hidden sm:block">
@@ -2477,8 +2765,8 @@ export default function App() {
                               <span className="text-[10px] font-black text-blue-600 uppercase">{item.source}</span>
                               <span className="text-[10px] text-gray-400 font-bold">• {new Date(item.publishedAt).toLocaleDateString()}</span>
                             </div>
-                            <h4 className="text-sm font-bold text-gray-900 group-hover:text-blue-600 transition-colors line-clamp-1">{item.title}</h4>
-                            <p className="text-xs text-gray-500 line-clamp-2 mt-1">{item.description}</p>
+                            <h4 className={cn("text-sm font-bold transition-colors line-clamp-1", darkMode ? "text-white group-hover:text-blue-400" : "text-gray-900 group-hover:text-blue-600")}>{item.title}</h4>
+                            <p className={cn("text-xs line-clamp-2 mt-1 transition-colors", darkMode ? "text-gray-400" : "text-gray-500")}>{item.description}</p>
                           </div>
                         </a>
                       ))}
@@ -2505,24 +2793,33 @@ export default function App() {
         )}
       </AnimatePresence>
 
-      <footer className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 border-t border-gray-200 mt-auto">
+      <footer className={cn(
+        "max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 border-t mt-auto transition-colors duration-300",
+        darkMode ? "border-gray-800 bg-[#0A0A0A]" : "border-gray-200 bg-white"
+      )}>
         <div className="flex flex-col md:flex-row items-center justify-between gap-6 text-sm text-gray-500">
           <div className="space-y-4 md:space-y-0 text-center md:text-left">
-            <p>© 2026 Bolsa Tracker. Dados fornecidos por Brapi.</p>
+            <p className={cn("transition-colors", darkMode ? "text-gray-400" : "text-gray-500")}>© 2026 Bolsa Tracker. Dados fornecidos por Brapi.</p>
             <div className="flex items-center justify-center md:justify-start gap-3 mt-4 md:mt-2">
-              <div className="flex items-center gap-2 px-3 py-1 bg-emerald-50 text-emerald-700 rounded-full text-[10px] font-black uppercase tracking-wider border border-emerald-100">
+              <div className={cn(
+                "flex items-center gap-2 px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider border transition-colors",
+                darkMode ? "bg-emerald-900/10 text-emerald-400 border-emerald-900/30" : "bg-emerald-50 text-emerald-700 border-emerald-100"
+              )}>
                 <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse shadow-[0_0_8px_rgba(16,185,129,0.6)]" />
                 {onlineUsers} pessoas online
               </div>
-              <div className="text-[10px] text-gray-400 font-bold uppercase py-1 px-3 bg-gray-50 rounded-full border border-gray-100">
+              <div className={cn(
+                "text-[10px] font-bold uppercase py-1 px-3 rounded-full border transition-colors",
+                darkMode ? "bg-gray-900 text-gray-500 border-gray-800" : "bg-gray-50 text-gray-400 border-gray-100"
+              )}>
                 Status: Operacional
               </div>
             </div>
           </div>
           <div className="flex items-center gap-6">
-            <a href="#" className="hover:text-blue-600 transition-colors">Termos</a>
-            <a href="#" className="hover:text-blue-600 transition-colors">Privacidade</a>
-            <a href="#" className="hover:text-blue-600 transition-colors">API</a>
+            <a href="#" className={cn("transition-colors", darkMode ? "hover:text-blue-400" : "hover:text-blue-600")}>Termos</a>
+            <a href="#" className={cn("transition-colors", darkMode ? "hover:text-blue-400" : "hover:text-blue-600")}>Privacidade</a>
+            <a href="#" className={cn("transition-colors", darkMode ? "hover:text-blue-400" : "hover:text-blue-600")}>API</a>
           </div>
         </div>
       </footer>
@@ -2585,11 +2882,4 @@ export default function App() {
   );
 }
 
-function StatRow({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="flex items-center justify-between py-2 border-b border-gray-50 last:border-0">
-      <span className="text-sm text-gray-500">{label}</span>
-      <span className="text-sm font-bold text-gray-800">{value}</span>
-    </div>
-  );
-}
+
