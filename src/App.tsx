@@ -211,56 +211,66 @@ export default function App() {
     setStockNewsLoading(true);
     try {
       const targetUrl = `https://brapi.dev/api/news?q=${symbol}&token=${BRAPI_TOKEN}`;
+      const targetUrlV2 = `https://brapi.dev/api/v2/news?tickers=${symbol}&token=${BRAPI_TOKEN}`;
       
+      const urls = [targetUrlV2, targetUrl];
+      let success = false;
+
       // Strategy 1: Direct Fetch
-      try {
-        const response = await fetch(targetUrl);
-        if (response.ok) {
-          const result = await response.json();
-          if (result.news) {
-            setStockNews(result.news);
-            setStockNewsLoading(false);
-            return;
+      for (const url of urls) {
+        try {
+          const response = await fetch(url);
+          if (response.ok) {
+            const result = await response.json();
+            if (result.news && result.news.length > 0) {
+              setStockNews(result.news);
+              success = true;
+              break;
+            }
           }
+        } catch (e) {
+          console.warn(`Direct fetch failed for ${symbol} news at ${url}`);
         }
-      } catch (e) {
-        console.warn(`Direct fetch failed for ${symbol}, trying proxy...`);
       }
 
-      // Strategy 2: Proxy Fallback (corsproxy.io)
-      try {
-        const proxyUrl = `https://corsproxy.io/?url=${encodeURIComponent(targetUrl)}`;
-        const response = await fetch(proxyUrl);
-        if (response.ok) {
-          const result = await response.json();
-          if (result.news) {
-            setStockNews(result.news);
-            setStockNewsLoading(false);
-            return;
+      // Strategy 2: Proxies
+      if (!success) {
+        for (const url of urls) {
+          // Try corsproxy.io
+          try {
+            const proxyUrl = `https://corsproxy.io/?url=${encodeURIComponent(url)}`;
+            const response = await fetch(proxyUrl);
+            if (response.ok) {
+              const result = await response.json();
+              if (result.news && result.news.length > 0) {
+                setStockNews(result.news);
+                success = true;
+                break;
+              }
+            }
+          } catch (e) {}
+
+          // Try allorigins
+          if (!success) {
+            try {
+              const allOriginsUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`;
+              const response = await fetch(allOriginsUrl);
+              if (response.ok) {
+                const data = await response.json();
+                const result = JSON.parse(data.contents);
+                if (result.news && result.news.length > 0) {
+                  setStockNews(result.news);
+                  success = true;
+                  break;
+                }
+              }
+            } catch (e) {}
           }
+          if (success) break;
         }
-      } catch (e) {
-        console.warn(`Proxy fetch failed for ${symbol}, trying allorigins...`);
       }
 
-      // Strategy 3: Proxy Fallback (allorigins)
-      try {
-        const allOriginsUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(targetUrl)}`;
-        const response = await fetch(allOriginsUrl);
-        if (response.ok) {
-          const data = await response.json();
-          const result = JSON.parse(data.contents);
-          if (result.news) {
-            setStockNews(result.news);
-            setStockNewsLoading(false);
-            return;
-          }
-        }
-      } catch (e) {
-        console.error(`All strategies failed for ${symbol} news`);
-      }
-
-      setStockNews([]);
+      if (!success) setStockNews([]);
     } catch (err) {
       console.error(`Erro crítico ao buscar notícias para ${symbol}:`, err);
       setStockNews([]);
@@ -278,28 +288,28 @@ export default function App() {
   }, [selectedStock, fetchStockSpecificNews]);
 
   const fetchNews = useCallback(async (symbols: string[]) => {
-    if (symbols.length === 0) {
-      setNews([]);
-      setNewsError(null);
-      return;
-    }
     setNewsLoading(true);
     setNewsError(null);
     
-    const symbol = symbols[0];
-    const targetUrl = `https://brapi.dev/api/news?q=${symbol}&token=${BRAPI_TOKEN}`;
-    const targetUrlV2 = `https://brapi.dev/api/v2/news?tickers=${symbol}&token=${BRAPI_TOKEN}`;
+    // Se não houver symbols, busca notícias gerais
+    const query = symbols.length > 0 ? symbols[0] : 'Bolsa';
+    const targetUrl = `https://brapi.dev/api/news?q=${query}&token=${BRAPI_TOKEN}`;
+    const targetUrlV2 = symbols.length > 0 
+      ? `https://brapi.dev/api/v2/news?tickers=${symbols.join(',')}&token=${BRAPI_TOKEN}`
+      : `https://brapi.dev/api/news?token=${BRAPI_TOKEN}`;
 
-    const urls = [targetUrl, targetUrlV2];
+    const urls = [targetUrlV2, targetUrl];
     let success = false;
     let fallbackUsed = false;
+    let anyRequestSucceeded = false;
 
-    // Strategy 1: Direct Fetch with fallbacks
+    // Strategy 1: Direct Fetch with multiple URLs
     for (const url of urls) {
       try {
         const response = await fetch(url);
         if (response.ok) {
           const result = await response.json();
+          anyRequestSucceeded = true;
           if (result.news && result.news.length > 0) {
             setNews(result.news);
             success = true;
@@ -311,45 +321,59 @@ export default function App() {
       }
     }
 
-    // Strategy 2: Proxy Fallback 1
+    // Strategy 2: Proxy Fallback 1 (corsproxy.io)
     if (!success) {
-      try {
-        const proxyUrl = `https://corsproxy.io/?url=${encodeURIComponent(targetUrl)}`;
-        const response = await fetch(proxyUrl);
-        if (response.ok) {
-          const result = await response.json();
-          if (result.news) {
-            setNews(result.news);
-            success = true;
-            fallbackUsed = true;
+      for (const url of urls) {
+        try {
+          const proxyUrl = `https://corsproxy.io/?url=${encodeURIComponent(url)}`;
+          const response = await fetch(proxyUrl);
+          if (response.ok) {
+            const result = await response.json();
+            anyRequestSucceeded = true;
+            if (result.news && result.news.length > 0) {
+              setNews(result.news);
+              success = true;
+              fallbackUsed = true;
+              break;
+            }
           }
+        } catch (err) {
+          console.warn('Corsproxy failed for url, trying next...');
         }
-      } catch (err) {
-        console.warn('Corsproxy failed, trying next...');
       }
     }
 
-    // Strategy 3: Proxy Fallback 2
+    // Strategy 3: Proxy Fallback 2 (allorigins)
     if (!success) {
-      try {
-        const allOriginsUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(targetUrl)}`;
-        const response = await fetch(allOriginsUrl);
-        if (response.ok) {
-          const data = await response.json();
-          const result = JSON.parse(data.contents);
-          if (result.news) {
-            setNews(result.news);
-            success = true;
-            fallbackUsed = true;
+      for (const url of urls) {
+        try {
+          const allOriginsUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`;
+          const response = await fetch(allOriginsUrl);
+          if (response.ok) {
+            const data = await response.json();
+            anyRequestSucceeded = true;
+            const result = JSON.parse(data.contents);
+            if (result.news && result.news.length > 0) {
+              setNews(result.news);
+              success = true;
+              fallbackUsed = true;
+              break;
+            }
           }
+        } catch (err) {
+          console.warn('Allorigins failed for url.');
         }
-      } catch (err) {
-        console.warn('Allorigins failed.');
       }
     }
 
     if (!success) {
-      setNewsError('Não foi possível carregar as notícias devido a restrições de rede ou limite da API.');
+      if (anyRequestSucceeded) {
+        // A requisição funcionou mas não retornou notícias
+        setNews([]);
+        // Não define erro se a API apenas não tem notícias para aquele ticker
+      } else {
+        setNewsError('Não foi possível carregar as notícias devido a restrições de rede ou limite da API.');
+      }
     } else if (fallbackUsed) {
       console.log('Notícias carregadas via proxy com sucesso.');
     }
@@ -2132,15 +2156,20 @@ export default function App() {
                     <Newspaper className="w-5 h-5 text-blue-600" />
                   </div>
                   <div>
-                    <h2 className="text-lg font-bold">Últimas Notícias</h2>
-                    <p className="text-xs text-gray-400">Fique por dentro das movimentações de {tickers[0]}</p>
+                    <h2 className={cn("text-lg font-bold transition-colors", darkMode ? "text-white" : "text-gray-900")}>Últimas Notícias</h2>
+                    <p className={cn("text-xs transition-colors", darkMode ? "text-gray-500" : "text-gray-400")}>
+                      {tickers.length > 0 ? `Fique por dentro das movimentações de ${tickers[0]}` : 'Principais notícias do mercado financeiro'}
+                    </p>
                   </div>
                 </div>
                 {newsLoading && <RefreshCw className="w-4 h-4 text-blue-500 animate-spin" />}
               </div>
 
               {newsError && (
-                <div className="mb-6 p-4 bg-rose-50 rounded-2xl border border-rose-100 flex items-center justify-between gap-3 text-rose-600 animate-in fade-in slide-in-from-top-2">
+                <div className={cn(
+                  "mb-6 p-4 rounded-2xl border flex items-center justify-between gap-3 transition-colors animate-in fade-in slide-in-from-top-2",
+                  darkMode ? "bg-rose-900/10 border-rose-900/30 text-rose-400" : "bg-rose-50 border-rose-100 text-rose-600"
+                )}>
                   <div className="flex items-center gap-3">
                     <AlertCircle className="w-5 h-5 flex-shrink-0" />
                     <div className="flex flex-col">
@@ -2150,7 +2179,10 @@ export default function App() {
                   </div>
                   <button 
                     onClick={() => fetchNews(tickers)}
-                    className="px-3 py-1 bg-white border border-rose-200 rounded-lg text-[10px] font-black uppercase hover:bg-rose-50 transition-colors shadow-sm"
+                    className={cn(
+                      "px-3 py-1 border rounded-lg text-[10px] font-black uppercase transition-all shadow-sm",
+                      darkMode ? "bg-gray-900 border-gray-800 hover:bg-gray-800 text-gray-300" : "bg-white border-rose-200 hover:bg-rose-50 text-gray-700"
+                    )}
                   >
                     Tentar Novamente
                   </button>
